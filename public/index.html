@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RideDispatch</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>RideDispatch</h1>
+    <nav class="roles" aria-label="Choose your role">
+      <button type="button" data-role="rider" aria-pressed="true">Rider</button>
+      <button type="button" data-role="driver" aria-pressed="false">Driver</button>
+      <button type="button" data-role="dispatch" aria-pressed="false">Dispatcher</button>
+    </nav>
+    <p class="status" id="hdr-stats" aria-live="polite"></p>
+  </header>
+
+  <main class="layout">
+    <section class="mapwrap" aria-label="Live city map">
+      <svg id="map" viewBox="0 0 100 100" role="img" aria-label="Map showing places, drivers and rides"></svg>
+      <ul class="legend">
+        <li><i class="k free"></i>Free driver</li>
+        <li><i class="k busy"></i>On a ride</li>
+        <li><i class="k off"></i>Offline</li>
+        <li><i class="k pin"></i>Pickup</li>
+        <li><i class="k drop"></i>Drop-off</li>
+      </ul>
+      <p class="maphint" id="maphint" hidden>Tap the map to move your car.</p>
+    </section>
+
+    <section class="panel">
+      <!-- RIDER -->
+      <div id="view-rider" class="view">
+        <h2>Book a ride</h2>
+        <form id="r-form" class="stack">
+          <label>Your name<input id="r-name" required maxlength="60" autocomplete="name"></label>
+          <label>Phone (optional)<input id="r-phone" maxlength="20" inputmode="tel" autocomplete="tel"></label>
+          <label>Pickup<select id="r-pickup"></select></label>
+          <label>Drop-off<select id="r-drop"></select></label>
+          <p class="estimate" id="r-est"></p>
+          <button class="primary" type="submit">Request ride</button>
+        </form>
+        <div id="r-live"></div>
+      </div>
+
+      <!-- DRIVER -->
+      <div id="view-driver" class="view" hidden>
+        <h2>Driver</h2>
+        <label>Driver profile<select id="d-select"></select></label>
+        <div id="d-live"></div>
+        <details class="reg">
+          <summary>Register a new driver</summary>
+          <form id="d-form" class="stack">
+            <label>Full name<input id="d-name" required maxlength="60"></label>
+            <label>Vehicle<input id="d-vehicle" required maxlength="60" placeholder="Toyota Corolla"></label>
+            <label>Plate number<input id="d-plate" required maxlength="15"></label>
+            <button class="primary" type="submit">Register driver</button>
+          </form>
+        </details>
+      </div>
+
+      <!-- DISPATCH -->
+      <div id="view-dispatch" class="view" hidden>
+        <h2>Dispatch desk</h2>
+        <div class="stats" id="x-stats"></div>
+        <label class="switch"><input type="checkbox" id="x-auto"> Assign nearest driver automatically</label>
+        <h3>Rides in progress</h3>
+        <div id="x-queue"></div>
+        <h3>Drivers</h3>
+        <div id="x-drivers"></div>
+        <h3>Recent rides</h3>
+        <div id="x-recent"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
