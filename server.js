@@ -1,7 +1,6 @@
-// RideDispatch: a negotiated dispatch marketplace. Zero dependencies (Node 18+).
-// Customers post a delivery with an opening price. Dispatch riders accept or counter.
-// When one side accepts the other's latest price, the deal is sealed.
-// The platform takes a flat commission per rider per active day (default 500 NGN).
+// Bargo: book a courier, negotiate the price, seal the deal.
+// Zero dependencies (Node 18+). Data is kept in one JSON file.
+'use strict';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -10,502 +9,433 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const ADMIN_PIN = process.env.ADMIN_PIN || '';
 const TZ = 'Africa/Lagos';
-const SESSION_MS = 30 * 24 * 3600 * 1000;
+const DEFAULT_COMMISSION = Number(process.env.COMMISSION_PER_DAY) || 500;
 
-// ---------- Simulated city (0-100 grid) ----------
+// ---------- Reference data ----------
+// Areas of Lagos on a rough 100x100 grid, used for distance and the map.
 const PLACES = [
-  { id: 'airport', name: 'Airport', x: 90, y: 12 },
-  { id: 'station', name: 'Central Station', x: 50, y: 50 },
-  { id: 'market', name: 'Main Market', x: 28, y: 62 },
-  { id: 'univ', name: 'University', x: 15, y: 20 },
-  { id: 'hospital', name: 'General Hospital', x: 70, y: 35 },
-  { id: 'mall', name: 'City Mall', x: 78, y: 70 },
-  { id: 'stadium', name: 'Stadium', x: 40, y: 15 },
-  { id: 'harbor', name: 'Harbor', x: 55, y: 90 },
-  { id: 'hotel', name: 'Grand Hotel', x: 62, y: 58 },
-  { id: 'park', name: 'Riverside Park', x: 22, y: 88 },
+  { id: 'ikeja', name: 'Ikeja', x: 28, y: 14 },
+  { id: 'maryland', name: 'Maryland', x: 42, y: 24 },
+  { id: 'oshodi', name: 'Oshodi', x: 28, y: 36 },
+  { id: 'yaba', name: 'Yaba', x: 48, y: 44 },
+  { id: 'surulere', name: 'Surulere', x: 30, y: 56 },
+  { id: 'apapa', name: 'Apapa', x: 12, y: 72 },
+  { id: 'island', name: 'Lagos Island', x: 55, y: 66 },
+  { id: 'ikoyi', name: 'Ikoyi', x: 69, y: 60 },
+  { id: 'vi', name: 'Victoria Island', x: 62, y: 79 },
+  { id: 'lekki', name: 'Lekki Phase 1', x: 80, y: 77 },
+  { id: 'ajah', name: 'Ajah', x: 92, y: 90 },
 ];
-const VEHICLES = { bike: { label: 'Motorbike', mult: 1 }, car: { label: 'Car', mult: 1.6 }, van: { label: 'Van', mult: 2.4 } };
-const ITEMS = ['Electronics/Gadgets', 'Food items/Groceries', 'Documents', 'Clothing', 'Medicine', 'Other'];
-const KM_PER_UNIT = 0.35;
-const FARE = { base: 500, perKm: 150, perMin: 20, speedKmh: 30 };
+const KM_PER_UNIT = 0.4;
+const VEHICLES = {
+  bike: { label: 'Bike', base: 500, perKm: 100 },
+  car: { label: 'Car', base: 1000, perKm: 180 },
+  van: { label: 'Van', base: 2000, perKm: 280 },
+};
+const ITEMS = ['Documents', 'Electronics/Gadgets', 'Food Items/Groceries', 'Clothing', 'Other'];
+const MIN_PRICE = 100;
+const MAX_PRICE = 5000000;
+const OPEN_STATES = ['agreed', 'picked_up'];
 
 // ---------- Persistence ----------
 let db;
-const blank = () => ({
-  settings: { commissionPerDay: 500, minPrice: 300, maxPrice: 1000000 },
-  next: { user: 1, delivery: 1, ledger: 1 },
-  users: [], sessions: {}, deliveries: [], ledger: [],
-});
-let saveTimer = null;
-function save() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try { fs.writeFileSync(DATA_FILE, JSON.stringify(db)); } catch (e) { console.error('save failed:', e.message); }
-  }, 100);
-}
-function saveNow() { clearTimeout(saveTimer); fs.writeFileSync(DATA_FILE, JSON.stringify(db)); }
-
-// ---------- Security helpers ----------
-const hashPin = (pin, salt) => crypto.scryptSync(String(pin), salt, 32).toString('hex');
-const checkPin = (u, pin) => {
-  const a = Buffer.from(hashPin(pin, u.salt), 'hex'), b = Buffer.from(u.pinHash, 'hex');
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-};
-const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
-
-function makeUser(role, name, phone, pin, extra = {}) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const u = { id: 'u' + db.next.user++, role, name, phone, salt, pinHash: hashPin(pin, salt), createdAt: Date.now(), ...extra };
-  db.users.push(u);
-  return u;
-}
-function newSession(user) {
-  const token = crypto.randomBytes(24).toString('hex');
-  db.sessions[sha(token)] = { userId: user.id, at: Date.now() };
-  return token;
-}
-
-function bootstrap() {
-  if (!db.users.some((u) => u.role === 'admin')) {
-    const phone = process.env.ADMIN_PHONE || 'admin';
-    const given = process.env.ADMIN_PIN;
-    const pin = given || String(crypto.randomInt(100000, 999999));
-    makeUser('admin', 'Admin', phone, pin);
-    if (!given) console.log(`\n  Admin account created.\n  Phone: ${phone}\n  PIN:   ${pin}   (shown once; set ADMIN_PIN to choose your own)\n`);
-    saveNow();
-  }
-  if (process.env.SEED_DEMO === '1' && !db.users.some((u) => u.role !== 'admin')) {
-    makeUser('customer', 'Demo Customer', '08000000001', '1234');
-    [['Emeka Obi', '08000000011', 'bike', 'RV-123-AA', 48, 45], ['Amina Yusuf', '08000000012', 'bike', 'RV-456-BB', 20, 60],
-      ['Tunde Bello', '08000000013', 'car', 'RV-789-CC', 75, 30]].forEach(([n, p, v, pl, x, y]) =>
-      makeUser('courier', n, p, '1234', { courier: { vehicle: v, plate: pl, online: true, x, y, rating: 4.8, ratingCount: 10, completed: 12 } }));
-    saveNow();
-    console.log('  SEED_DEMO=1: demo accounts created (customer 08000000001, riders 08000000011-13, PIN 1234). Do not use in production.');
-  }
+function seed() {
+  const mk = (n, name, phone, vehicle, plate) => ({
+    id: 'd' + n, name, phone, vehicle, plate, status: 'online',
+    rating: 4.8, ratingCount: 10, completed: 0,
+  });
+  return {
+    settings: { commissionPerDay: DEFAULT_COMMISSION },
+    nextJobId: 1,
+    nextDriverId: 6,
+    drivers: [
+      mk(1, 'Emeka Obi', '08031230001', 'bike', 'LSR-221-KJA'),
+      mk(2, 'Amina Yusuf', '08031230002', 'bike', 'LSR-318-APP'),
+      mk(3, 'Tunde Bello', '08031230003', 'car', 'KJA-742-GH'),
+      mk(4, 'Grace Okon', '08031230004', 'car', 'EKY-190-BC'),
+      mk(5, 'Ibrahim Musa', '08031230005', 'van', 'LND-563-AA'),
+    ],
+    jobs: [],
+    ledger: [], // one entry per courier per working day
+  };
 }
 function load() {
-  try { db = { ...blank(), ...JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')) }; } catch { db = blank(); }
-  bootstrap();
+  try {
+    db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    if (!db.jobs || !db.ledger || !db.settings) throw new Error('old format');
+  } catch { db = seed(); flush(); }
 }
+function flush() {
+  const tmp = DATA_FILE + '.tmp';
+  try { fs.writeFileSync(tmp, JSON.stringify(db, null, 2)); fs.renameSync(tmp, DATA_FILE); }
+  catch (e) { console.error('save failed', e.message); }
+}
+let saveTimer = null;
+function save() { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 100); }
 
 // ---------- Helpers ----------
 const httpErr = (status, message) => Object.assign(new Error(message), { status });
 const need = (cond, code, msg) => { if (!cond) throw httpErr(code, msg); };
 const str = (v, max = 80) => String(v ?? '').trim().slice(0, max);
-const round = (n, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
-const now = () => Date.now();
-const dayKey = (ts) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(ts));
 const place = (id) => PLACES.find((p) => p.id === id);
-const userById = (id) => db.users.find((u) => u.id === id);
-const normPhone = (v) => String(v ?? '').replace(/[\s\-()]/g, '').toLowerCase();
-const validPhone = (p) => /^\+?\d{7,15}$/.test(p);
+const dayOf = (ts = Date.now()) => new Date(ts).toLocaleDateString('en-CA', { timeZone: TZ });
+const kmBetween = (a, b) => Math.max(1, Math.round(Math.hypot(a.x - b.x, a.y - b.y) * KM_PER_UNIT * 10) / 10);
 
-function estimate(pickup, dropoff, vehicle) {
-  const km = Math.hypot(pickup.x - dropoff.x, pickup.y - dropoff.y) * KM_PER_UNIT;
-  const minutes = Math.max(1, Math.round((km / FARE.speedKmh) * 60));
-  const raw = (FARE.base + km * FARE.perKm + minutes * FARE.perMin) * VEHICLES[vehicle].mult;
-  const to50 = (n) => Math.max(db.settings.minPrice, Math.round(n / 50) * 50);
-  return { km: round(km, 1), minutes, suggested: to50(raw), low: to50(raw * 0.8), high: to50(raw * 1.4) };
+function suggest(a, b, vehicle) {
+  const v = VEHICLES[vehicle];
+  const km = kmBetween(a, b);
+  const fare = Math.max(v.base, v.base + km * v.perKm);
+  return { km, minutes: Math.max(5, Math.round((km / 25) * 60)), fare: Math.round(fare / 50) * 50 };
 }
-const parsePrice = (v) => {
+function priceOf(v) {
   const n = Number(v);
-  need(Number.isInteger(n) && n >= db.settings.minPrice && n <= db.settings.maxPrice, 400,
-    `Price must be a whole number between ${db.settings.minPrice} and ${db.settings.maxPrice}`);
+  need(Number.isInteger(n) && n >= MIN_PRICE && n <= MAX_PRICE, 400, `Price must be a whole number from ₦${MIN_PRICE} to ₦${MAX_PRICE.toLocaleString('en-NG')}`);
   return n;
-};
-
-const ACTIVE_JOB = ['sealed', 'picked_up'];
-const activeJob = (courierId) => db.deliveries.find((d) => d.courierId === courierId && ACTIVE_JOB.includes(d.status));
-const latest = (t) => t.history[t.history.length - 1];
-const findDelivery = (id) => { const d = db.deliveries.find((x) => String(x.id) === String(id)); need(d, 404, 'Delivery not found'); return d; };
-
-// ---------- Negotiation ----------
-function courierCanBid(u, d) {
-  need(u.courier.online, 409, 'Go online to send offers');
-  need(u.courier.vehicle === d.vehicle, 403, 'This request needs a different vehicle');
-  need(!activeJob(u.id), 409, 'Finish your current delivery first');
 }
-function threadFor(user, d, body, create) {
-  if (user.role === 'courier') {
-    let t = d.threads.find((x) => x.courierId === user.id);
-    if (!t && create) {
-      need(d.threads.filter((x) => x.status === 'active').length < 15, 409, 'Too many riders are negotiating on this request');
-      t = { courierId: user.id, status: 'active', history: [{ by: 'customer', price: d.askPrice, at: d.createdAt }], updatedAt: now() };
-      d.threads.push(t);
+const getJob = (id) => { const j = db.jobs.find((j) => String(j.id) === String(id)); need(j, 404, 'Delivery not found'); return j; };
+const getDriver = (id) => { const d = db.drivers.find((d) => d.id === id); need(d, 404, 'Courier not found'); return d; };
+const isBusy = (d) => db.jobs.some((j) => j.driverId === d.id && OPEN_STATES.includes(j.status));
+const lastOf = (n) => n.history[n.history.length - 1];
+const turnOf = (n) => (n.status === 'active' ? (lastOf(n).by === 'driver' ? 'sender' : 'driver') : null);
+
+// ---------- Views (what each side is allowed to see) ----------
+const driverPub = (d) => ({
+  id: d.id, name: d.name, vehicle: d.vehicle, plate: d.plate, rating: d.rating,
+  ratingCount: d.ratingCount, completed: d.completed, status: d.status,
+});
+function baseJob(j) {
+  const { negotiations, declinedBy, senderId, ...rest } = j;
+  return rest;
+}
+function senderView(j) {
+  return {
+    ...baseJob(j),
+    negotiations: j.negotiations.map((n) => ({ ...n, turn: turnOf(n), driver: driverPub(getDriver(n.driverId)) })),
+    driver: j.driverId ? { ...driverPub(getDriver(j.driverId)), phone: getDriver(j.driverId).phone } : null,
+  };
+}
+function driverView(j, driverId) {
+  const n = j.negotiations.find((x) => x.driverId === driverId);
+  const mine = j.driverId === driverId;
+  const showContacts = mine && ['agreed', 'picked_up', 'delivered'].includes(j.status);
+  const v = baseJob(j);
+  if (!showContacts) { delete v.recipientName; delete v.recipientPhone; delete v.senderPhone; v.senderName = v.senderName.split(' ')[0]; }
+  return { ...v, mine, negotiation: n ? { history: n.history, status: n.status, turn: turnOf(n) } : null };
+}
+
+// ---------- Deal logic ----------
+function seal(job, driver, price) {
+  need(job.status === 'open', 409, 'This delivery already has a deal');
+  need(driver.status === 'online', 409, 'This courier is offline');
+  need(!isBusy(driver), 409, 'This courier is already on a delivery');
+  let n = job.negotiations.find((x) => x.driverId === driver.id);
+  if (!n) { n = { driverId: driver.id, history: [{ by: 'sender', price: job.openingPrice, at: Date.now() }], status: 'active' }; job.negotiations.push(n); }
+  job.negotiations.forEach((x) => { if (x !== n && x.status === 'active') x.status = 'closed'; });
+  n.status = 'sealed';
+  job.status = 'agreed';
+  job.driverId = driver.id;
+  job.agreedPrice = price;
+  job.timeline.push({ status: 'agreed', at: Date.now(), note: `${driver.name} at ${price}` });
+}
+
+function chargeCommission(driverId, jobId) {
+  const date = dayOf();
+  if (db.ledger.some((l) => l.driverId === driverId && l.date === date)) return;
+  db.ledger.push({ driverId, date, amount: db.settings.commissionPerDay, jobId });
+}
+
+function senderAction(job, action, body) {
+  need(job.senderId === str(body.senderId, 60), 403, 'This is not your delivery');
+  need(job.status === 'open', 409, 'This delivery is no longer open for offers');
+  const n = job.negotiations.find((x) => x.driverId === body.driverId);
+  need(n && n.status === 'active', 404, 'No active offer from this courier');
+  const last = lastOf(n);
+  need(last.by === 'driver', 409, "It is the courier's turn to respond");
+  if (action === 'counter') n.history.push({ by: 'sender', price: priceOf(body.price), at: Date.now() });
+  else if (action === 'accept') seal(job, getDriver(n.driverId), last.price);
+  else if (action === 'decline') n.status = 'declined';
+  else throw httpErr(404, 'Not found');
+  return senderView(job);
+}
+
+function driverAction(job, action, body) {
+  const d = getDriver(str(body.driverId, 20));
+  const n = job.negotiations.find((x) => x.driverId === d.id);
+  const openChecks = () => {
+    need(job.status === 'open', 409, 'This delivery is no longer open');
+    need(d.status === 'online', 409, 'Go online first');
+    need(d.vehicle === job.vehicle, 409, `This delivery needs a ${VEHICLES[job.vehicle].label.toLowerCase()}`);
+    need(!job.declinedBy.includes(d.id) && !(n && ['declined', 'withdrawn'].includes(n.status)), 409, 'You can no longer make offers on this delivery');
+  };
+  switch (action) {
+    case 'accept': {
+      openChecks();
+      if (n) { need(n.status === 'active' && lastOf(n).by === 'sender', 409, "It is the sender's turn to respond"); seal(job, d, lastOf(n).price); }
+      else seal(job, d, job.openingPrice);
+      break;
     }
-    need(t, 404, 'No negotiation with this customer yet');
-    return t;
-  }
-  need(d.customerId === user.id, 403, 'This is not your delivery');
-  const t = d.threads.find((x) => x.courierId === body.courierId);
-  need(t, 404, 'Rider not found on this request');
-  return t;
-}
-const partyOf = (user) => (user.role === 'courier' ? 'courier' : 'customer');
-
-function seal(d, thread, price, party) {
-  const c = userById(thread.courierId);
-  need(c && c.courier.online, 409, 'That rider is offline now. Pick another offer.');
-  need(!activeJob(c.id), 409, 'That rider just took another delivery. Pick another offer.');
-  const t = now();
-  d.status = 'sealed'; d.courierId = c.id; d.agreedPrice = price; d.sealedAt = t;
-  thread.status = 'accepted'; thread.updatedAt = t;
-  thread.history.push({ by: party, price, at: t, accepted: true });
-  d.threads.forEach((x) => { if (x !== thread && x.status === 'active') x.status = 'closed'; });
-  // A rider can only run one delivery at a time, so their other open negotiations close.
-  db.deliveries.forEach((o) => {
-    if (o !== d && o.status === 'open') o.threads.forEach((x) => { if (x.courierId === c.id && x.status === 'active') x.status = 'closed'; });
-  });
-  d.timeline.push({ status: 'sealed', at: t, note: `Agreed at ${price}` });
-}
-
-function doOffer(user, d, body) {
-  need(d.status === 'open', 409, 'This request is no longer open');
-  const price = parsePrice(body.price);
-  if (user.role === 'courier') courierCanBid(user, d);
-  const thread = threadFor(user, d, body, user.role === 'courier');
-  need(thread.status === 'active', 409, 'This negotiation has ended');
-  need(thread.history.length < 20, 429, 'Negotiation limit reached. Accept or walk away.');
-  const party = partyOf(user), last = latest(thread);
-  if (last.by !== party && last.price === price) { seal(d, thread, price, party); return d; }
-  thread.history.push({ by: party, price, at: now() });
-  thread.updatedAt = now();
-  return d;
-}
-function doAccept(user, d, body) {
-  need(d.status === 'open', 409, 'This request is no longer open');
-  if (user.role === 'courier') courierCanBid(user, d);
-  const thread = threadFor(user, d, body, user.role === 'courier');
-  need(thread.status === 'active', 409, 'This negotiation has ended');
-  const party = partyOf(user), last = latest(thread);
-  need(last.by !== party, 409, 'Wait for the other side to reply before accepting');
-  seal(d, thread, last.price, party);
-  return d;
-}
-function doLeave(user, d, body) {
-  need(d.status === 'open', 409, 'This request is no longer open');
-  const thread = threadFor(user, d, body, false);
-  need(thread.status === 'active', 409, 'This negotiation has ended');
-  thread.status = user.role === 'courier' ? 'withdrawn' : 'declined';
-  thread.updatedAt = now();
-  return d;
-}
-
-// ---------- Delivery lifecycle ----------
-function advance(user, d) {
-  need(d.courierId === user.id, 403, 'This is not your delivery');
-  const t = now();
-  if (d.status === 'sealed') {
-    d.status = 'picked_up'; d.pickedUpAt = t; user.courier.x = d.pickup.x; user.courier.y = d.pickup.y;
-  } else if (d.status === 'picked_up') {
-    d.status = 'delivered'; d.deliveredAt = t; user.courier.x = d.dropoff.x; user.courier.y = d.dropoff.y; user.courier.completed += 1;
-    const day = dayKey(t);
-    if (!db.ledger.some((l) => l.courierId === user.id && l.date === day) && db.settings.commissionPerDay > 0) {
-      db.ledger.push({ id: 'l' + db.next.ledger++, courierId: user.id, date: day, amount: db.settings.commissionPerDay, status: 'owed', deliveryId: d.id, createdAt: t });
+    case 'counter': {
+      openChecks();
+      const price = priceOf(body.price);
+      let neg = n;
+      if (!neg) { neg = { driverId: d.id, history: [{ by: 'sender', price: job.openingPrice, at: Date.now() }], status: 'active' }; job.negotiations.push(neg); }
+      need(neg.status === 'active' && lastOf(neg).by === 'sender', 409, "It is the sender's turn to respond");
+      neg.history.push({ by: 'driver', price, at: Date.now() });
+      break;
     }
-  } else throw httpErr(409, `Cannot advance a ${d.status} delivery`);
-  d.timeline.push({ status: d.status, at: t });
-}
-
-// ---------- Serializers (privacy: recipient details only after sealing) ----------
-const publicUser = (u) => ({ id: u.id, role: u.role, name: u.name, phone: u.phone, courier: u.courier || undefined });
-const courierCard = (c, full) => ({
-  id: c.id, name: c.name, vehicle: c.courier.vehicle, rating: c.courier.rating, ratingCount: c.courier.ratingCount, completed: c.courier.completed,
-  ...(full ? { phone: c.phone, plate: c.courier.plate, x: c.courier.x, y: c.courier.y } : {}),
-});
-const threadView = (t) => {
-  const c = userById(t.courierId), last = latest(t);
-  return { courierId: t.courierId, status: t.status, history: t.history, price: last.price, turn: last.by === 'courier' ? 'customer' : 'courier', courier: c && courierCard(c, false) };
-};
-function deliveryBase(d) {
-  return {
-    id: d.id, status: d.status, pickup: d.pickup, dropoff: d.dropoff, vehicle: d.vehicle, item: d.item, quantity: d.quantity,
-    payer: d.payer, payMethod: d.payMethod, note: d.note, askPrice: d.askPrice, suggested: d.suggested, km: d.km, minutes: d.minutes,
-    agreedPrice: d.agreedPrice, createdAt: d.createdAt, timeline: d.timeline, rating: d.rating,
-  };
-}
-const revealed = (d) => ['sealed', 'picked_up', 'delivered'].includes(d.status);
-function forCustomer(d) {
-  const c = d.courierId ? userById(d.courierId) : null;
-  return {
-    ...deliveryBase(d), recipientName: d.recipientName, recipientPhone: d.recipientPhone,
-    threads: d.threads.map(threadView), courier: c && revealed(d) ? courierCard(c, true) : null,
-  };
-}
-function forCourier(d, me) {
-  const mine = d.courierId === me.id;
-  const customer = userById(d.customerId);
-  const t = d.threads.find((x) => x.courierId === me.id);
-  return {
-    ...deliveryBase(d), customerName: customer ? customer.name.split(' ')[0] : 'Customer',
-    myThread: t ? threadView(t) : null,
-    ...(mine && revealed(d) ? { recipientName: d.recipientName, recipientPhone: d.recipientPhone, customerPhone: customer && customer.phone } : {}),
-  };
-}
-
-function earnings(me) {
-  const done = db.deliveries.filter((d) => d.courierId === me.id && d.status === 'delivered');
-  const days = [];
-  for (let i = 0; i < 7; i++) {
-    const key = dayKey(now() - i * 86400000);
-    const ds = done.filter((d) => dayKey(d.deliveredAt) === key);
-    const gross = ds.reduce((s, d) => s + d.agreedPrice, 0);
-    const l = db.ledger.find((x) => x.courierId === me.id && x.date === key);
-    const commission = l ? l.amount : 0;
-    days.push({ date: key, deliveries: ds.length, gross, commission, net: gross - commission });
+    case 'reject': {
+      need(job.status === 'open', 409, 'This delivery is no longer open');
+      if (n && n.status === 'active') n.status = 'withdrawn';
+      if (!job.declinedBy.includes(d.id)) job.declinedBy.push(d.id);
+      break;
+    }
+    case 'pickup': {
+      need(job.driverId === d.id && job.status === 'agreed', 409, 'This delivery is not ready for pickup');
+      job.status = 'picked_up';
+      job.timeline.push({ status: 'picked_up', at: Date.now() });
+      break;
+    }
+    case 'deliver': {
+      need(job.driverId === d.id && job.status === 'picked_up', 409, 'Pick the package up first');
+      job.status = 'delivered';
+      job.deliveredAt = Date.now();
+      job.deliveredDate = dayOf();
+      job.timeline.push({ status: 'delivered', at: Date.now() });
+      d.completed += 1;
+      chargeCommission(d.id, job.id);
+      break;
+    }
+    case 'withdraw': {
+      need(job.driverId === d.id && job.status === 'agreed', 409, 'You can only pull out before pickup');
+      job.status = 'open';
+      job.driverId = null;
+      job.agreedPrice = null;
+      job.declinedBy.push(d.id);
+      job.negotiations.forEach((x) => { if (x.driverId === d.id) x.status = 'withdrawn'; else if (x.status === 'closed') x.status = 'active'; });
+      job.timeline.push({ status: 'courier_withdrew', at: Date.now(), note: d.name });
+      break;
+    }
+    default: throw httpErr(404, 'Not found');
   }
-  return {
-    today: days[0], week: days, commissionPerDay: db.settings.commissionPerDay,
-    owed: db.ledger.filter((l) => l.courierId === me.id && l.status === 'owed').reduce((s, l) => s + l.amount, 0),
-    totalDelivered: done.length,
-  };
+  return driverView(job, d.id);
 }
 
-function feedFor(user) {
-  const ds = db.deliveries;
-  if (user.role === 'customer') {
-    return { deliveries: ds.filter((d) => d.customerId === user.id).slice(-60).reverse().map(forCustomer) };
-  }
-  if (user.role === 'courier') {
-    const available = ds.filter((d) => d.status === 'open' && d.vehicle === user.courier.vehicle &&
-      !d.threads.some((t) => t.courierId === user.id && t.status !== 'active')).slice(-40).reverse().map((d) => forCourier(d, user));
-    const mine = ds.filter((d) => d.courierId === user.id).slice(-60).reverse().map((d) => forCourier(d, user));
-    return { available, mine, earnings: earnings(user), me: publicUser(user) };
-  }
-  const couriers = db.users.filter((u) => u.role === 'courier').map((u) => ({ ...courierCard(u, true), online: u.courier.online }));
-  const owedBy = {};
-  db.ledger.forEach((l) => { if (l.status === 'owed') owedBy[l.courierId] = (owedBy[l.courierId] || 0) + l.amount; });
-  return {
-    deliveries: ds.slice(-100).reverse().map((d) => ({ ...deliveryBase(d), customer: (userById(d.customerId) || {}).name, courier: d.courierId ? (userById(d.courierId) || {}).name : null, threadCount: d.threads.length })),
-    couriers: couriers.map((c) => ({ ...c, owed: owedBy[c.id] || 0 })),
-    ledger: db.ledger.slice(-200).reverse().map((l) => ({ ...l, courier: (userById(l.courierId) || {}).name })),
-    totals: {
-      customers: db.users.filter((u) => u.role === 'customer').length, couriers: couriers.length, online: couriers.filter((c) => c.online).length,
-      open: ds.filter((d) => d.status === 'open').length, active: ds.filter((d) => ACTIVE_JOB.includes(d.status)).length,
-      delivered: ds.filter((d) => d.status === 'delivered').length,
-      owed: db.ledger.filter((l) => l.status === 'owed').reduce((s, l) => s + l.amount, 0),
-      collected: db.ledger.filter((l) => l.status === 'paid').reduce((s, l) => s + l.amount, 0),
-    },
-    settings: db.settings,
-  };
-}
-
-// ---------- Routes ----------
-const routes = [];
-const route = (method, pattern, roles, fn) =>
-  routes.push({ method, roles, fn, re: new RegExp('^' + pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)') + '$') });
-
-const attempts = new Map();
-route('POST', '/api/auth/register', null, ({ body }) => {
-  const role = body.role;
-  need(['customer', 'courier'].includes(role), 400, 'Choose customer or rider');
-  const name = str(body.name, 60), phone = normPhone(body.phone), pin = String(body.pin ?? '');
-  need(name.length >= 2, 400, 'Enter your full name');
-  need(validPhone(phone), 400, 'Enter a valid phone number');
-  need(/^\d{4,6}$/.test(pin), 400, 'PIN must be 4 to 6 digits');
-  need(!db.users.some((u) => u.phone === phone), 409, 'An account with this phone number already exists. Sign in instead.');
-  const extra = {};
-  if (role === 'courier') {
-    const plate = str(body.plate, 15).toUpperCase();
-    need(VEHICLES[body.vehicle], 400, 'Choose your vehicle');
-    need(plate.length >= 3, 400, 'Enter your plate number');
-    const p = PLACES[Math.floor(Math.random() * PLACES.length)];
-    extra.courier = { vehicle: body.vehicle, plate, online: false, x: p.x, y: p.y, rating: 5, ratingCount: 0, completed: 0 };
-  }
-  const user = makeUser(role, name, phone, pin, extra);
-  const token = newSession(user);
-  save();
-  return [201, { token, user: publicUser(user) }];
-});
-route('POST', '/api/auth/login', null, ({ body }) => {
-  const phone = normPhone(body.phone);
-  const a = attempts.get(phone) || { fails: 0, until: 0 };
-  need(a.until < now(), 429, 'Too many attempts. Try again in a few minutes.');
-  const user = db.users.find((u) => u.phone === phone);
-  if (!user || !checkPin(user, body.pin ?? '')) {
-    a.fails += 1;
-    if (a.fails >= 5) { a.fails = 0; a.until = now() + 5 * 60000; }
-    attempts.set(phone, a);
-    throw httpErr(401, 'Wrong phone number or PIN');
-  }
-  attempts.delete(phone);
-  for (const [k, s] of Object.entries(db.sessions)) if (now() - s.at > SESSION_MS) delete db.sessions[k];
-  const token = newSession(user);
-  save();
-  return { token, user: publicUser(user) };
-});
-route('POST', '/api/auth/logout', 'any', ({ token }) => { delete db.sessions[sha(token)]; save(); return { ok: true }; });
-route('GET', '/api/me', 'any', ({ user }) => publicUser(user));
-
-route('GET', '/api/config', null, () => ({
-  places: PLACES, vehicles: VEHICLES, items: ITEMS,
-  settings: { commissionPerDay: db.settings.commissionPerDay, minPrice: db.settings.minPrice, maxPrice: db.settings.maxPrice },
-}));
-route('POST', '/api/estimate', null, ({ body }) => {
-  const a = place(body.pickupId), b = place(body.dropoffId);
-  need(a && b && VEHICLES[body.vehicle], 400, 'Choose pickup, drop-off and vehicle');
-  return estimate(a, b, body.vehicle);
-});
-route('GET', '/api/feed', 'any', ({ user }) => feedFor(user));
-
-route('POST', '/api/deliveries', ['customer'], ({ user, body }) => {
-  const a = place(body.pickupId), b = place(body.dropoffId);
-  need(a && b, 400, 'Choose a pickup and drop-off area');
-  need(a.id !== b.id, 400, 'Pickup and drop-off must be different areas');
+function createJob(body) {
+  const a = place(body.pickupAreaId), b = place(body.dropAreaId);
+  need(a && b, 400, 'Choose a pickup and a delivery area');
+  const pickupAddress = str(body.pickupAddress, 120), dropAddress = str(body.dropAddress, 120);
+  need(pickupAddress && dropAddress, 400, 'Enter the pickup and delivery addresses');
+  const senderId = str(body.senderId, 60), senderName = str(body.senderName, 60);
+  need(senderId && senderName, 400, 'Your name is required');
   need(VEHICLES[body.vehicle], 400, 'Choose a vehicle type');
-  const pickupAddress = str(body.pickupAddress, 120), dropoffAddress = str(body.dropoffAddress, 120);
-  need(pickupAddress && dropoffAddress, 400, 'Enter the street address for pickup and drop-off');
-  need(ITEMS.includes(body.item), 400, 'Choose what you are sending');
+  need(ITEMS.includes(body.itemType), 400, 'Choose what you are sending');
   const quantity = Number(body.quantity);
-  need(Number.isInteger(quantity) && quantity >= 1 && quantity <= 99, 400, 'Quantity must be between 1 and 99');
-  need(['sender', 'recipient'].includes(body.payer), 400, 'Choose who pays');
-  need(['cash', 'transfer'].includes(body.payMethod), 400, 'Choose a payment method');
-  const recipientName = str(body.recipientName, 60), recipientPhone = normPhone(body.recipientPhone);
-  need(recipientName.length >= 2, 400, 'Enter the recipient name');
-  need(validPhone(recipientPhone), 400, 'Enter a valid recipient phone number');
-  const askPrice = parsePrice(body.askPrice);
-  need(db.deliveries.filter((d) => d.customerId === user.id && d.status === 'open').length < 5, 409, 'You already have 5 open requests. Cancel one first.');
-  const est = estimate(a, b, body.vehicle);
-  const d = {
-    id: db.next.delivery++, customerId: user.id,
-    pickup: { ...a, address: pickupAddress }, dropoff: { ...b, address: dropoffAddress },
-    vehicle: body.vehicle, item: body.item, quantity, payer: body.payer, payMethod: body.payMethod,
-    recipientName, recipientPhone, note: str(body.note, 200),
-    askPrice, suggested: est.suggested, km: est.km, minutes: est.minutes,
-    status: 'open', threads: [], courierId: null, agreedPrice: null, rating: null,
-    createdAt: now(), timeline: [{ status: 'open', at: now(), note: `Asking ${askPrice}` }],
+  need(Number.isInteger(quantity) && quantity >= 1 && quantity <= 999, 400, 'Quantity must be between 1 and 999');
+  const recipientName = str(body.recipientName, 60), recipientPhone = str(body.recipientPhone, 20);
+  need(recipientName, 400, 'Enter the recipient name');
+  need(/^[+\d][\d\s-]{6,18}$/.test(recipientPhone), 400, 'Enter a valid recipient phone number');
+  const payer = body.payer === 'recipient' ? 'recipient' : 'sender';
+  need(['cash', 'transfer'].includes(body.payment), 400, 'Choose how the courier will be paid');
+  const deliveryType = body.deliveryType === 'scheduled' ? 'scheduled' : 'instant';
+  let scheduledAt = null;
+  if (deliveryType === 'scheduled') {
+    scheduledAt = new Date(body.scheduledAt).getTime();
+    need(Number.isFinite(scheduledAt) && scheduledAt > Date.now(), 400, 'Pick a pickup time in the future');
+  }
+  const est = suggest(a, b, body.vehicle);
+  const openingPrice = body.openingPrice === undefined || body.openingPrice === '' ? est.fare : priceOf(body.openingPrice);
+  const job = {
+    id: db.nextJobId++, senderId, senderName, senderPhone: str(body.senderPhone, 20),
+    deliveryType, scheduledAt,
+    pickup: { areaId: a.id, area: a.name, address: pickupAddress },
+    drop: { areaId: b.id, area: b.name, address: dropAddress },
+    itemType: body.itemType, quantity, note: str(body.note, 200),
+    recipientName, recipientPhone, vehicle: body.vehicle, payer, payment: body.payment,
+    km: est.km, suggested: est.fare, openingPrice,
+    status: 'open', driverId: null, agreedPrice: null,
+    negotiations: [], declinedBy: [], createdAt: Date.now(),
+    timeline: [{ status: 'open', at: Date.now() }],
   };
-  db.deliveries.push(d);
-  save();
-  return [201, forCustomer(d)];
-});
-route('POST', '/api/deliveries/:id/offer', ['customer', 'courier'], ({ user, params, body }) => { const d = doOffer(user, findDelivery(params.id), body); save(); return { ok: true, status: d.status }; });
-route('POST', '/api/deliveries/:id/accept', ['customer', 'courier'], ({ user, params, body }) => { const d = doAccept(user, findDelivery(params.id), body); save(); return { ok: true, status: d.status }; });
-route('POST', '/api/deliveries/:id/leave', ['customer', 'courier'], ({ user, params, body }) => { const d = doLeave(user, findDelivery(params.id), body); save(); return { ok: true, status: d.status }; });
-route('POST', '/api/deliveries/:id/cancel', ['customer'], ({ user, params }) => {
-  const d = findDelivery(params.id);
-  need(d.customerId === user.id, 403, 'This is not your delivery');
-  need(['open', 'sealed'].includes(d.status), 409, d.status === 'picked_up' ? 'The package is already on its way' : 'This delivery can no longer be cancelled');
-  d.status = 'cancelled';
-  d.threads.forEach((t) => { if (t.status === 'active') t.status = 'closed'; });
-  d.timeline.push({ status: 'cancelled', at: now() });
-  save();
-  return { ok: true };
-});
-route('POST', '/api/deliveries/:id/advance', ['courier'], ({ user, params }) => { const d = findDelivery(params.id); advance(user, d); save(); return { ok: true, status: d.status }; });
-route('POST', '/api/deliveries/:id/rate', ['customer'], ({ user, params, body }) => {
-  const d = findDelivery(params.id);
-  need(d.customerId === user.id, 403, 'This is not your delivery');
-  need(d.status === 'delivered', 409, 'You can rate after delivery');
-  need(!d.rating, 409, 'Already rated');
-  const n = Number(body.rating);
-  need(Number.isInteger(n) && n >= 1 && n <= 5, 400, 'Rating must be 1 to 5');
-  d.rating = n;
-  const c = userById(d.courierId).courier;
-  c.rating = round((c.rating * c.ratingCount + n) / (c.ratingCount + 1), 2);
-  c.ratingCount += 1;
-  save();
-  return { ok: true };
-});
+  db.jobs.push(job);
+  return job;
+}
 
-route('POST', '/api/me/courier', ['courier'], ({ user, body }) => {
-  const c = user.courier;
-  if (typeof body.online === 'boolean') {
-    need(body.online || !activeJob(user.id), 409, 'Finish your current delivery before going offline');
-    c.online = body.online;
-  }
-  if (body.x !== undefined || body.y !== undefined) {
-    const x = Number(body.x), y = Number(body.y);
-    need(x >= 0 && x <= 100 && y >= 0 && y <= 100, 400, 'Location must be inside the map');
-    c.x = x; c.y = y;
-  }
-  save();
-  return publicUser(user);
-});
+// ---------- Feeds ----------
+function earningsOf(driverId) {
+  const delivered = db.jobs.filter((j) => j.driverId === driverId && j.status === 'delivered');
+  const days = {};
+  delivered.forEach((j) => { const x = (days[j.deliveredDate] ||= { date: j.deliveredDate, jobs: 0, gross: 0, commission: 0 }); x.jobs += 1; x.gross += j.agreedPrice; });
+  db.ledger.filter((l) => l.driverId === driverId).forEach((l) => { const x = (days[l.date] ||= { date: l.date, jobs: 0, gross: 0, commission: 0 }); x.commission += l.amount; });
+  const byDay = Object.values(days).sort((a, b) => (a.date < b.date ? 1 : -1)).map((x) => ({ ...x, net: x.gross - x.commission }));
+  const gross = byDay.reduce((s, x) => s + x.gross, 0), commission = byDay.reduce((s, x) => s + x.commission, 0);
+  const today = dayOf();
+  return {
+    gross, commission, net: gross - commission, byDay,
+    commissionPerDay: db.settings.commissionPerDay,
+    commissionDueToday: db.ledger.some((l) => l.driverId === driverId && l.date === today) ? 0 : db.settings.commissionPerDay,
+  };
+}
 
-route('POST', '/api/admin/settings', ['admin'], ({ body }) => {
-  const s = db.settings;
-  if (body.commissionPerDay !== undefined) { const n = Number(body.commissionPerDay); need(Number.isInteger(n) && n >= 0 && n <= 100000, 400, 'Commission must be a whole number from 0 to 100000'); s.commissionPerDay = n; }
-  if (body.minPrice !== undefined) { const n = Number(body.minPrice); need(Number.isInteger(n) && n >= 50 && n < s.maxPrice, 400, 'Minimum price must be at least 50'); s.minPrice = n; }
-  save();
-  return s;
-});
-route('POST', '/api/admin/ledger/:id/paid', ['admin'], ({ params }) => {
-  const l = db.ledger.find((x) => x.id === params.id);
-  need(l, 404, 'Entry not found');
-  l.status = 'paid'; l.paidAt = now();
-  save();
-  return l;
-});
-route('POST', '/api/admin/couriers/:id/settle', ['admin'], ({ params }) => {
-  let n = 0;
-  db.ledger.forEach((l) => { if (l.courierId === params.id && l.status === 'owed') { l.status = 'paid'; l.paidAt = now(); n++; } });
-  save();
-  return { settled: n };
-});
+function driverFeed(d) {
+  const mineJobs = db.jobs.filter((j) => j.driverId === d.id);
+  const open = db.jobs.filter((j) => j.status === 'open' && j.vehicle === d.vehicle && !j.declinedBy.includes(d.id));
+  const neg = (j) => j.negotiations.find((n) => n.driverId === d.id);
+  const newest = (a, b) => b.createdAt - a.createdAt;
+  return {
+    driver: { ...driverPub(d), phone: d.phone },
+    available: open.filter((j) => !neg(j)).sort(newest).map((j) => driverView(j, d.id)),
+    offers: open.filter((j) => neg(j) && neg(j).status === 'active').sort(newest).map((j) => driverView(j, d.id)),
+    current: mineJobs.filter((j) => OPEN_STATES.includes(j.status)).map((j) => driverView(j, d.id)),
+    history: mineJobs.filter((j) => j.status === 'delivered' || j.status === 'cancelled').sort((a, b) => (b.deliveredAt || 0) - (a.deliveredAt || 0)).slice(0, 30).map((j) => driverView(j, d.id)),
+    earnings: earningsOf(d.id),
+  };
+}
+
+function adminFeed() {
+  const delivered = db.jobs.filter((j) => j.status === 'delivered');
+  return {
+    settings: db.settings,
+    totals: {
+      jobs: db.jobs.length,
+      open: db.jobs.filter((j) => j.status === 'open').length,
+      active: db.jobs.filter((j) => OPEN_STATES.includes(j.status)).length,
+      delivered: delivered.length,
+      dealValue: delivered.reduce((s, j) => s + j.agreedPrice, 0),
+      commission: db.ledger.reduce((s, l) => s + l.amount, 0),
+    },
+    drivers: db.drivers.map((d) => ({ ...driverPub(d), phone: d.phone, earnings: earningsOf(d.id) })),
+    jobs: db.jobs.slice(-60).reverse().map((j) => ({ ...baseJob(j), offers: j.negotiations.length })),
+    ledger: db.ledger.slice(-60).reverse(),
+  };
+}
 
 // ---------- HTTP ----------
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let s = '';
-    req.on('data', (c) => { s += c; if (s.length > 1e5) { reject(httpErr(413, 'Request too large')); req.destroy(); } });
-    req.on('end', () => { try { const j = s ? JSON.parse(s) : {}; resolve(j && typeof j === 'object' ? j : {}); } catch { reject(httpErr(400, 'Invalid JSON')); } });
+    req.on('data', (c) => { s += c; if (s.length > 1e6) { reject(httpErr(413, 'Body too large')); req.destroy(); } });
+    req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch { reject(httpErr(400, 'Invalid JSON')); } });
   });
 }
 const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
-
-function authenticate(req) {
-  const m = /^Bearer (\w{20,})$/.exec(req.headers.authorization || '');
-  if (!m) return {};
-  const s = db.sessions[sha(m[1])];
-  if (!s || now() - s.at > SESSION_MS) return {};
-  const user = userById(s.userId);
-  return user ? { user, token: m[1] } : {};
+function adminOk(req) {
+  if (!ADMIN_PIN) return true;
+  const got = Buffer.from(String(req.headers['x-admin-pin'] || '')), want = Buffer.from(ADMIN_PIN);
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
 }
 
 async function api(req, res, url) {
-  const r = routes.map((rt) => ({ rt, m: rt.method === req.method && rt.re.exec(url.pathname) })).find((x) => x.m);
-  need(r, 404, 'Not found');
-  const { user, token } = authenticate(req);
-  if (r.rt.roles) {
-    need(user, 401, 'Please sign in');
-    need(r.rt.roles === 'any' || r.rt.roles.includes(user.role), 403, 'This action is not available for your account');
+  const parts = url.pathname.split('/').filter(Boolean).slice(1);
+  const m = req.method;
+  const body = m === 'POST' ? await readBody(req) : {};
+  const ok = (code, obj) => { save(); return send(res, code, obj); };
+
+  if (m === 'GET' && parts[0] === 'meta') {
+    return send(res, 200, { places: PLACES, vehicles: VEHICLES, items: ITEMS, commissionPerDay: db.settings.commissionPerDay, adminPinRequired: !!ADMIN_PIN, min: MIN_PRICE, max: MAX_PRICE });
   }
-  const body = req.method === 'POST' ? await readBody(req) : {};
-  const out = r.rt.fn({ user, token, body, params: r.m.groups || {} });
-  Array.isArray(out) ? send(res, out[0], out[1]) : send(res, 200, out);
+  if (m === 'POST' && parts[0] === 'estimate') {
+    const a = place(body.pickupAreaId), b = place(body.dropAreaId);
+    need(a && b && VEHICLES[body.vehicle], 400, 'Choose areas and a vehicle');
+    return send(res, 200, suggest(a, b, body.vehicle));
+  }
+
+  if (parts[0] === 'sender' && m === 'GET' && parts[2] === 'jobs') {
+    const id = str(parts[1], 60);
+    return send(res, 200, { jobs: db.jobs.filter((j) => j.senderId === id).sort((a, b) => b.createdAt - a.createdAt).map(senderView) });
+  }
+
+  if (parts[0] === 'jobs') {
+    if (m === 'POST' && parts.length === 1) return ok(201, senderView(createJob(body)));
+    const job = getJob(parts[1]);
+    if (m === 'POST' && parts[2] === 'cancel') {
+      need(job.senderId === str(body.senderId, 60), 403, 'This is not your delivery');
+      need(['open', 'agreed'].includes(job.status), 409, 'It is too late to cancel this delivery');
+      job.status = 'cancelled';
+      job.timeline.push({ status: 'cancelled', at: Date.now() });
+      return ok(200, senderView(job));
+    }
+    if (m === 'POST' && parts[2] === 'rate') {
+      need(job.senderId === str(body.senderId, 60), 403, 'This is not your delivery');
+      need(job.status === 'delivered', 409, 'The delivery is not complete yet');
+      need(!job.rating, 409, 'You already rated this delivery');
+      const n = Number(body.rating);
+      need(Number.isInteger(n) && n >= 1 && n <= 5, 400, 'Rating must be from 1 to 5');
+      job.rating = n;
+      const d = getDriver(job.driverId);
+      d.rating = Math.round(((d.rating * d.ratingCount + n) / (d.ratingCount + 1)) * 100) / 100;
+      d.ratingCount += 1;
+      return ok(200, senderView(job));
+    }
+    if (m === 'POST' && parts[2] === 'sender') return ok(200, senderAction(job, parts[3], body));
+    if (m === 'POST' && parts[2] === 'driver') return ok(200, driverAction(job, parts[3], body));
+  }
+
+  if (parts[0] === 'drivers') {
+    if (m === 'GET' && parts.length === 1) return send(res, 200, { drivers: db.drivers.map(driverPub) });
+    if (m === 'POST' && parts.length === 1) {
+      const name = str(body.name, 60), phone = str(body.phone, 20), plate = str(body.plate, 15);
+      need(name && plate, 400, 'Name and plate number are required');
+      need(/^[+\d][\d\s-]{6,18}$/.test(phone), 400, 'Enter a valid phone number');
+      need(VEHICLES[body.vehicle], 400, 'Choose a vehicle type');
+      const d = { id: 'd' + db.nextDriverId++, name, phone, vehicle: body.vehicle, plate, status: 'offline', rating: 5, ratingCount: 0, completed: 0 };
+      db.drivers.push(d);
+      return ok(201, driverPub(d));
+    }
+    if (m === 'POST' && parts[2] === 'status') {
+      const d = getDriver(parts[1]);
+      need(['online', 'offline'].includes(body.status), 400, 'Status must be online or offline');
+      need(!(body.status === 'offline' && isBusy(d)), 409, 'Finish your current delivery first');
+      d.status = body.status;
+      return ok(200, driverPub(d));
+    }
+  }
+  if (parts[0] === 'driver' && m === 'GET') return send(res, 200, driverFeed(getDriver(parts[1])));
+
+  if (parts[0] === 'admin') {
+    need(adminOk(req), 401, 'Enter the admin PIN');
+    if (m === 'GET') return send(res, 200, adminFeed());
+    if (m === 'POST' && parts[1] === 'settings') {
+      const c = Number(body.commissionPerDay);
+      need(Number.isInteger(c) && c >= 0 && c <= 100000, 400, 'Commission must be a whole number from 0 to 100,000');
+      db.settings.commissionPerDay = c;
+      return ok(200, adminFeed());
+    }
+  }
+  throw httpErr(404, 'Not found');
 }
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png' };
-const HEADERS = {
-  'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer',
-  'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'",
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json',
+  '.png': 'image/png', '.ico': 'image/x-icon',
 };
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
-    let rel;
-    try { rel = decodeURIComponent(url.pathname); } catch { rel = '/'; }
-    const file = path.join(PUBLIC_DIR, path.normalize(rel === '/' ? '/index.html' : rel));
+    const rel = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
+    const file = path.join(PUBLIC_DIR, path.normalize(rel));
     if (!file.startsWith(PUBLIC_DIR + path.sep)) { res.writeHead(403); return res.end('Forbidden'); }
     fs.readFile(file, (err, buf) => {
       if (err) { res.writeHead(404); return res.end('Not found'); }
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', ...HEADERS });
+      const ext = path.extname(file);
+      const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+      // The service worker and page shell must always revalidate so updates reach installed apps.
+      if (ext === '.html' || path.basename(file) === 'sw.js' || ext === '.webmanifest') headers['Cache-Control'] = 'no-cache';
+      if (path.basename(file) === 'sw.js') headers['Service-Worker-Allowed'] = '/';
+      res.writeHead(200, headers);
       res.end(buf);
     });
   } catch (e) {
     send(res, e.status || 500, { error: e.status ? e.message : 'Server error' });
-    if (!e.status) console.error(e);
   }
 });
 
 load();
 if (require.main === module) {
-  server.listen(PORT, () => console.log(`RideDispatch running at http://localhost:${PORT}`));
-  process.on('SIGINT', () => { try { saveNow(); } catch { /* ignore */ } process.exit(0); });
+  server.listen(PORT, '0.0.0.0', () => console.log(`Bargo running at http://localhost:${PORT}`));
 }
 module.exports = server;

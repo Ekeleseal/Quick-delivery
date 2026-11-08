@@ -1,569 +1,669 @@
 'use strict';
-// ---------- Small helpers ----------
+// Bargo front end: one small app, three roles (sender, courier, admin).
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const naira = (n) => '₦' + Number(n).toLocaleString('en-NG');
+const money = (n) => '₦' + Math.round(Number(n) || 0).toLocaleString('en-NG');
 const store = {
-  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  get(k, d = '') { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
-  del(k) { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } },
 };
-const digits = (v) => Number(String(v ?? '').replace(/\D/g, '')) || 0;
-const timeOf = (ts) => new Date(ts).toLocaleTimeString('en-NG', { hour: 'numeric', minute: '2-digit' });
-const dayOf = (ts) => new Date(ts).toLocaleDateString('en-NG', { day: 'numeric', month: 'short' });
-const dateKeyLabel = (k) => new Date(k + 'T12:00:00').toLocaleDateString('en-NG', { weekday: 'short', day: 'numeric', month: 'short' });
-const initials = (n) => String(n).split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
-const stars = (r) => `${Number(r).toFixed(1)} rating`;
 
-const ICONS = {
-  bike: '<circle cx="5.5" cy="16.5" r="3"/><circle cx="18.5" cy="16.5" r="3"/><path d="M8.5 16.5h4l3-6h-3M15.5 10.5l3 6M12 7.5h3"/>',
-  car: '<path d="M3 15v-3l2-5h14l2 5v3M3 15h18M3 15v3h3v-3M21 15v3h-3v-3M6 12h12"/>',
-  van: '<path d="M2 16V7h11v9M13 10h4l3 3v3H2"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>',
-  bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>',
-  home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9z"/>',
-  wallet: '<rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18M16 15h2"/>',
-  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+// ---------- Icons ----------
+const ICON = {
+  back: '<path d="M15 18l-6-6 6-6"/>',
+  home: '<path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
+  wallet: '<path d="M3 7h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7l12-3v3"/><circle cx="16.5" cy="13.5" r="1"/>',
+  list: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
-  chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
-  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
-  back: '<path d="M15 5l-7 7 7 7"/>',
-  pin: '<path d="M12 21s7-6 7-11a7 7 0 0 0-14 0c0 5 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/>',
-  hand: '<path d="M4 13l4-4 4 3 4-3 4 4-6 6-3-1-3 1z"/>',
+  bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+  clock: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6"/>',
+  bike: '<circle cx="6" cy="16" r="3.5"/><circle cx="18" cy="16" r="3.5"/><path d="M6 16l4-8h4l4 8M10 8L9 6H7M13 12h4"/>',
+  car: '<path d="M5 16l1.5-5.5A2 2 0 0 1 8.4 9h7.2a2 2 0 0 1 1.9 1.5L19 16"/><rect x="3" y="16" width="18" height="4" rx="1.5"/><circle cx="7.5" cy="18" r=".6"/><circle cx="16.5" cy="18" r=".6"/>',
+  van: '<path d="M2 17V7a1 1 0 0 1 1-1h10v11M13 9h4l4 4v4h-8"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
+  pin: '<path d="M12 22s7-6.5 7-12a7 7 0 0 0-14 0c0 5.5 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  box: '<path d="M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v9"/>',
+  phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
 };
-const ic = (n, s = 22) => `<svg class="ic" viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
-
-// ---------- State ----------
-const A = {
-  cfg: null, token: store.get('token', ''), user: null, feed: null,
-  route: { name: 'welcome' }, ui: {}, sig: '',
-  skipped: new Set(JSON.parse(store.get('skipped', '[]') || '[]')),
-};
-const ROADS = [['station', 'market'], ['station', 'hospital'], ['station', 'hotel'], ['station', 'stadium'], ['hotel', 'mall'],
-  ['hotel', 'harbor'], ['market', 'park'], ['market', 'univ'], ['hospital', 'airport'], ['stadium', 'univ'], ['harbor', 'park'], ['stadium', 'hospital']];
+const ic = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
 
 // ---------- API ----------
-async function api(path, body) {
+async function call(path, body, headers = {}) {
   const res = await fetch('/api/' + path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'Content-Type': 'application/json', ...(A.token ? { Authorization: 'Bearer ' + A.token } : {}) },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
-  if (res.status === 401 && A.token && !path.startsWith('auth/')) { signOut(); throw new Error('Your session ended. Please sign in again.'); }
-  if (!res.ok) throw new Error(json.error || 'Something went wrong');
+  if (!res.ok) throw Object.assign(new Error(json.error || 'Something went wrong. Try again.'), { status: res.status });
   return json;
 }
 let toastTimer;
-function toast(msg, err) {
+function toast(msg, isErr) {
   const t = $('#toast');
   t.textContent = msg;
-  t.className = 'show' + (err ? ' err' : '');
+  t.className = 'show' + (isErr ? ' err' : '');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.className = ''; }, 3800);
 }
-async function run(fn) {
-  try { await fn(); } catch (e) { toast(e.message, true); }
-}
-async function refreshFeed(force) {
-  if (!A.user) return;
-  A.feed = await api('feed');
-  if (A.feed.me) A.user = A.feed.me;
-  render(force);
-}
 
-// ---------- Navigation and rendering ----------
-function go(name, params = {}) {
-  A.route = { name, ...params };
-  const s = $('#screen');
-  if (s) s.scrollTop = 0;
-  render(true);
-}
-function captureFocus() {
-  const el = document.activeElement;
-  if (!el || !el.dataset || !el.dataset.k) return null;
-  return { k: el.dataset.k, s: el.selectionStart, e: el.selectionEnd };
-}
-function restoreFocus(f) {
-  if (!f) return;
-  const el = $(`[data-k="${CSS.escape(f.k)}"]`);
-  if (!el) return;
-  el.focus();
-  try { if (f.s != null) el.setSelectionRange(f.s, f.e); } catch { /* not a text input */ }
-}
-function render(force) {
-  const sig = JSON.stringify([A.route, A.user && A.user.id, A.feed, A.cfg && A.cfg.settings]);
-  if (!force && sig === A.sig) return;
-  A.sig = sig;
-  const f = captureFocus();
-  $('#screen').innerHTML = screenHTML();
-  const tabs = tabsHTML();
-  $('#tabs').innerHTML = tabs;
-  $('#tabs').hidden = !tabs;
-  restoreFocus(f);
-}
-function signOut() {
-  store.del('token');
-  Object.assign(A, { token: '', user: null, feed: null, ui: {}, route: { name: 'welcome' } });
-  render(true);
-}
-
-const TABS = {
-  customer: [['home', 'Home', 'home'], ['list', 'Deliveries', 'list'], ['profile', 'Profile', 'user']],
-  courier: [['home', 'Home', 'home'], ['earnings', 'Earnings', 'wallet'], ['list', 'Deliveries', 'list'], ['profile', 'Profile', 'user']],
-  admin: [['home', 'Overview', 'chart'], ['commission', 'Commission', 'wallet'], ['settings', 'Settings', 'gear']],
+// ---------- State ----------
+let meta = null;
+let data = null;
+let dsig = '';
+const me = {
+  role: store.get('role'), senderId: store.get('senderId'), name: store.get('name'),
+  phone: store.get('phone'), driverId: store.get('driverId'),
 };
-function tabsHTML() {
-  if (!A.user || A.route.name === 'new') return '';
-  const on = A.route.name === 'delivery' ? 'list' : A.route.name;
-  return TABS[A.user.role].map(([n, label, icon]) =>
-    `<button type="button" class="tab${on === n ? ' on' : ''}" data-do="go" data-to="${n}" ${on === n ? 'aria-current="page"' : ''}>${ic(icon)}<span>${label}</span></button>`).join('');
-}
-function screenHTML() {
-  const n = A.route.name, u = A.user;
-  if (!u) return ({ welcome, login, register }[n] || welcome)();
-  const M = {
-    customer: { home: custHome, new: wizard, delivery: custDelivery, list: custList, profile },
-    courier: { home: courHome, earnings: courEarnings, list: courList, profile },
-    admin: { home: adminHome, commission: adminCommission, settings: adminSettings, profile },
-  }[u.role];
-  return (M[n] || M.home)();
+let nav = { stack: [], cur: { name: 'home' } };
+const ui = { step: 1, draft: null, est: null, counter: {}, open: {}, seen: new Set(), reg: {}, prof: {}, pin: '', pinBad: false, drivers: null, showReg: false, error: '' };
+let installEvent = null;
+
+const OPEN = ['open', 'agreed', 'picked_up'];
+const STATUS = { open: 'Open', agreed: 'Deal sealed', picked_up: 'On the way', delivered: 'Delivered', cancelled: 'Cancelled' };
+const STEP_LABEL = { agreed: 'Deal sealed', picked_up: 'Picked up', delivered: 'Delivered' };
+
+function persistMe() { for (const k of ['role', 'senderId', 'name', 'phone', 'driverId']) store.set(k, me[k] || ''); }
+const go = (name, params = {}) => { nav.stack.push(nav.cur); nav.cur = { name, ...params }; render(true); };
+const back = () => { nav.cur = nav.stack.pop() || { name: 'home' }; render(true); };
+const tab = (name) => { nav = { stack: [], cur: { name } }; render(true); };
+
+// ---------- Helpers ----------
+const fmtDate = (ts) => new Date(ts).toLocaleString('en-NG', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+const dayLabel = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-NG', { weekday: 'short', day: 'numeric', month: 'short' });
+const vlabel = (v) => meta?.vehicles?.[v]?.label || v;
+const turnCount = (j) => (j.status === 'open' ? (j.negotiations || []).filter((n) => n.status === 'active' && n.turn === 'sender').length : 0);
+const senderJob = (id) => (data?.jobs || []).find((j) => String(j.id) === String(id));
+const driverJob = (id) => {
+  if (!data) return null;
+  for (const k of ['current', 'offers', 'available', 'history']) { const j = (data[k] || []).find((x) => String(x.id) === String(id)); if (j) return j; }
+  return null;
+};
+const route = (j) => `${esc(j.pickup.area)} ${ic('arrow')} ${esc(j.drop.area)}`;
+const chip = (j) => `<span class="chip ${j.status}">${STATUS[j.status]}</span>`;
+const empty = (icon, msg) => `<div class="empty">${ic(icon)}<p>${msg}</p></div>`;
+const genId = () => 's_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+const getPath = (p) => { const i = p.indexOf('.'); return ui[p.slice(0, i)]?.[p.slice(i + 1)]; };
+function setPath(p, v) { const i = p.indexOf('.'); const root = p.slice(0, i); ui[root] ||= {}; ui[root][p.slice(i + 1)] = v; }
+
+function defaultDraft(type) {
+  return {
+    type, pickupAreaId: 'ikeja', pickupAddress: '', dropAreaId: 'vi', dropAddress: '', vehicle: 'bike', scheduledAt: '',
+    itemType: '', quantity: 1, note: '', recipientName: '', recipientPhone: '', payer: 'sender', payment: 'cash', price: 0, priceTouched: false,
+  };
 }
 
-// ---------- Reusable UI pieces ----------
-const topBar = (title, sub) => `<header class="top"><div><p class="sm muted">${esc(sub)}</p><h1 class="name">${esc(title)}</h1></div><span class="avatar" aria-hidden="true">${esc(initials(A.user.name))}</span></header>`;
-const backBar = (title, to, id) => `<header class="bar"><button type="button" class="back" data-do="go" data-to="${to}" ${id ? `data-id="${id}"` : ''} aria-label="Back">${ic('back', 26)}</button><h1>${esc(title)}</h1></header>`;
-function field(label, k, o = {}) {
-  const v = A.ui[k] ?? o.value ?? '';
-  const a = (n, val) => (val ? ` ${n}="${esc(val)}"` : '');
-  const tag = o.area ? `<textarea data-k="${k}" rows="2"${a('placeholder', o.ph)}${a('maxlength', o.max)}>${esc(v)}</textarea>` :
-    `<input data-k="${k}" value="${esc(v)}"${a('type', o.type)}${a('placeholder', o.ph)}${a('inputmode', o.mode)}${a('maxlength', o.max)}${a('autocomplete', o.ac)}>`;
-  return `<label class="field"><span>${esc(label)}</span>${tag}</label>`;
-}
-function selectField(label, k, options) {
-  const v = A.ui[k] ?? options[0][0];
-  return `<label class="field"><span>${esc(label)}</span><select data-k="${k}">${options.map(([val, txt]) => `<option value="${esc(val)}"${val === v ? ' selected' : ''}>${esc(txt)}</option>`).join('')}</select></label>`;
-}
-function seg(label, k, options) {
-  const v = A.ui[k] ?? options[0][0];
-  return `<div class="field"><span>${esc(label)}</span><div class="seg" role="group" aria-label="${esc(label)}">${options.map(([val, txt]) =>
-    `<button type="button" class="${val === v ? 'on' : ''}" data-do="pick" data-k="${k}" data-v="${esc(val)}" aria-pressed="${val === v}">${esc(txt)}</button>`).join('')}</div></div>`;
-}
-function vehicleTiles(k) {
-  const v = A.ui[k] || 'bike';
-  return `<div class="field"><span>Vehicle type</span><div class="tiles" role="group" aria-label="Vehicle type">${Object.entries(A.cfg.vehicles).map(([id, o]) =>
-    `<button type="button" class="tile${v === id ? ' on' : ''}" data-do="pick" data-k="${k}" data-v="${id}" aria-pressed="${v === id}">${ic(id, 34)}<small>${esc(o.label)}</small></button>`).join('')}</div></div>`;
-}
-const STATUS = {
-  open: ['Waiting for offers', 'warn'], sealed: ['Deal sealed', 'teal'], picked_up: ['On its way', 'teal'],
-  delivered: ['Delivered', 'good'], cancelled: ['Cancelled', 'grey'],
-};
-const chip = (d) => {
-  const [t, c] = STATUS[d.status] || [d.status, 'grey'];
-  const label = d.status === 'open' && d.threads && d.threads.length ? `${d.threads.filter((x) => x.status === 'active').length} offer${d.threads.filter((x) => x.status === 'active').length === 1 ? '' : 's'}` : t;
-  return `<span class="chip ${c}">${esc(label)}</span>`;
-};
+const stepper = (path, val, cls = '') => `
+  <div class="stepper ${cls}">
+    <button type="button" data-act="step" data-path="${path}" data-d="-100" aria-label="Lower the price by 100 naira">&minus;</button>
+    <span class="amt"><i aria-hidden="true">₦</i><input class="input" inputmode="numeric" data-num="1" data-bind="${path}" value="${esc(val)}" aria-label="Price in naira"></span>
+    <button type="button" data-act="step" data-path="${path}" data-d="100" aria-label="Raise the price by 100 naira">+</button>
+  </div>`;
 
-function mapSvg({ pickup, dropoff, courier } = {}) {
-  const P = A.cfg.places, byId = Object.fromEntries(P.map((p) => [p.id, p]));
-  const hi = new Set([pickup && pickup.id, dropoff && dropoff.id]);
-  let h = '<path d="M-2 38 C 18 28, 32 58, 52 42 S 82 52, 102 40" fill="none" stroke="#BFDDE6" stroke-width="7" stroke-linecap="round"/>';
-  ROADS.forEach(([a, b]) => {
-    h += `<line x1="${byId[a].x}" y1="${byId[a].y}" x2="${byId[b].x}" y2="${byId[b].y}" stroke="#C5D0CC" stroke-width="2"/><line x1="${byId[a].x}" y1="${byId[a].y}" x2="${byId[b].x}" y2="${byId[b].y}" stroke="#fff" stroke-width="1.3"/>`;
-  });
+function thread(history, youAre) {
+  return `<div class="thread">${history.map((h) => {
+    const mine = h.by === youAre;
+    return `<div class="bub ${h.by}"><small>${mine ? 'You' : h.by === 'sender' ? 'Sender' : 'Courier'}</small><b>${money(h.price)}</b></div>`;
+  }).join('')}</div>`;
+}
+
+function miniMap(j) {
+  const P = meta.places;
+  const a = P.find((p) => p.id === j.pickup.areaId), b = P.find((p) => p.id === j.drop.areaId);
+  const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+  let w = Math.max(46, Math.abs(a.x - b.x) + 30);
+  if (Math.abs(a.y - b.y) + 18 > w * 0.6) w = (Math.abs(a.y - b.y) + 18) / 0.6;
+  const h = w * 0.6, fs = w * 0.05;
+  let s = `<svg class="map" viewBox="${cx - w / 2} ${cy - h / 2} ${w} ${h}" role="img" aria-label="Route from ${esc(j.pickup.area)} to ${esc(j.drop.area)}">`;
   P.forEach((p) => {
-    const end = p.x > 72;
-    h += `<circle cx="${p.x}" cy="${p.y}" r="0.9" fill="#7C8F93"/><text x="${p.x + (end ? -2 : 2)}" y="${p.y + 1}" text-anchor="${end ? 'end' : 'start'}" class="mp${hi.has(p.id) ? ' hi' : ''}">${esc(p.name)}</text>`;
+    const key = p.id === a.id || p.id === b.id;
+    // Label on the side facing the middle of the map so it never runs off the edge or under a marker.
+    const right = p.x <= cx, off = key ? fs * 1.3 : fs * 0.6;
+    s += `<circle cx="${p.x}" cy="${p.y}" r="${fs * 0.28}" fill="#9db3a5"/>`;
+    if (key) s += `<text x="${right ? p.x + off : p.x - off}" y="${p.y + fs * 0.3}" text-anchor="${right ? 'start' : 'end'}" font-size="${fs * 1.1}" fill="#15262a" font-weight="600">${esc(p.name)}</text>`;
   });
-  if (pickup && dropoff) h += `<line x1="${pickup.x}" y1="${pickup.y}" x2="${dropoff.x}" y2="${dropoff.y}" stroke="#00606B" stroke-width="0.9" stroke-dasharray="1.8 1.4"/>`;
-  if (pickup) h += `<circle cx="${pickup.x}" cy="${pickup.y}" r="2.6" fill="#00606B" stroke="#fff" stroke-width="0.8"><title>Pickup</title></circle><circle cx="${pickup.x}" cy="${pickup.y}" r="0.9" fill="#fff"/>`;
-  if (dropoff) h += `<rect x="${dropoff.x - 2.3}" y="${dropoff.y - 2.3}" width="4.6" height="4.6" rx="1" fill="#16282C" stroke="#fff" stroke-width="0.8"><title>Drop-off</title></rect>`;
-  if (courier) h += `<circle cx="${courier.x}" cy="${courier.y}" r="3.2" fill="#F2B705" stroke="#16282C" stroke-width="0.8"><title>Rider</title></circle><text x="${courier.x}" y="${courier.y + 1.2}" text-anchor="middle" class="mc">R</text>`;
-  return `<svg class="map" id="map" viewBox="0 0 100 100" role="img" aria-label="Map of the route">${h}</svg>`;
-}
-const placeOf = (id) => A.cfg.places.find((p) => p.id === id);
-const routeText = (d) => `${esc(d.pickup.name)} to ${esc(d.dropoff.name)}`;
-const empty = (t) => `<p class="empty">${esc(t)}</p>`;
-function deliveryRow(d, forCourier) {
-  const price = d.agreedPrice || d.askPrice;
-  return `<button type="button" class="row" ${forCourier ? 'disabled' : `data-do="go" data-to="delivery" data-id="${d.id}"`}>
-    <span><strong>${routeText(d)}</strong><span class="sm muted">${esc(d.item)}, ${dayOf(d.createdAt)} ${timeOf(d.createdAt)}</span></span>
-    <span class="right"><span class="money">${naira(price)}</span>${chip(d)}</span></button>`;
+  s += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#0a6a6e" stroke-width="${fs * 0.3}" stroke-dasharray="${fs * 0.7} ${fs * 0.5}" stroke-linecap="round"/>`;
+  s += `<circle cx="${a.x}" cy="${a.y}" r="${fs * 0.75}" fill="#fff" stroke="#0a6a6e" stroke-width="${fs * 0.3}"/>`;
+  s += `<circle cx="${b.x}" cy="${b.y}" r="${fs * 0.85}" fill="#f4b400" stroke="#fff" stroke-width="${fs * 0.2}"/></svg>`;
+  return s;
 }
 
-// ---------- Signed-out screens ----------
-function welcome() {
-  return `<section class="hero">
-    <svg class="hero-art" viewBox="0 0 320 230" aria-hidden="true"><path d="M-10 200 C 70 200, 80 120, 150 120 S 250 70, 330 36" fill="none" stroke="#2E8E99" stroke-width="30" stroke-linecap="round"/><path d="M-10 200 C 70 200, 80 120, 150 120 S 250 70, 330 36" fill="none" stroke="#F2B705" stroke-width="2.5" stroke-dasharray="11 9"/><circle cx="262" cy="58" r="13" fill="#F2B705"/><circle cx="262" cy="58" r="5" fill="#00606B"/><rect x="60" y="150" width="26" height="26" rx="6" fill="#fff"/><rect x="66" y="156" width="14" height="14" rx="3" fill="#00606B"/></svg>
-    <div class="brand"><span class="logo" aria-hidden="true">${ic('hand', 22)}</span>RideDispatch</div>
-    <h1 class="big">Send anything.<br>Agree your price.</h1>
-    <p class="lead">Book a dispatch rider, negotiate the fare, and shake on it. No surprises.</p>
-    <button type="button" class="btn primary block" data-do="go" data-to="register">Get started</button>
-    <p class="center sm">Have an account already? <button type="button" class="link" data-do="go" data-to="login">Sign in</button></p>
-  </section>`;
-}
-function login() {
-  return `${backBar('Sign in', 'welcome')}<form class="pad stack" data-form="login">
-    ${field('Phone number', 'li.phone', { type: 'tel', mode: 'tel', ac: 'tel', max: 20 })}
-    ${field('PIN', 'li.pin', { type: 'password', mode: 'numeric', ac: 'current-password', max: 6 })}
-    <button class="btn primary block" type="submit">Sign in</button>
-    <p class="center sm">New here? <button type="button" class="link" data-do="go" data-to="register">Create an account</button></p></form>`;
-}
-function register() {
-  const step = A.route.step || 1;
-  if (step === 1) {
-    return `${backBar('Create account', 'welcome')}<div class="pad stack"><p class="muted">How will you use RideDispatch?</p>
-      <button type="button" class="mintcard" data-do="role" data-v="customer">${ic('bolt', 28)}<strong>I want to send packages</strong><span>Post a delivery, name your price and pick the offer you like.</span></button>
-      <button type="button" class="mintcard alt" data-do="role" data-v="courier">${ic('bike', 28)}<strong>I am a dispatch rider</strong><span>Browse requests, counter the price, and keep what you earn minus a flat ${naira(A.cfg.settings.commissionPerDay)} per active day.</span></button></div>`;
-  }
-  const rider = A.ui['reg.role'] === 'courier';
-  return `${backBar(rider ? 'Rider sign-up' : 'Your details', 'register')}<form class="pad stack" data-form="register">
-    ${field('Full name', 'reg.name', { ac: 'name', max: 60 })}
-    ${field('Phone number', 'reg.phone', { type: 'tel', mode: 'tel', ac: 'tel', max: 20 })}
-    ${field('Choose a PIN (4 to 6 digits)', 'reg.pin', { type: 'password', mode: 'numeric', ac: 'new-password', max: 6 })}
-    ${rider ? vehicleTiles('reg.vehicle') + field('Plate number', 'reg.plate', { max: 15 }) : ''}
-    <button class="btn primary block" type="submit">Create account</button></form>`;
+// ---------- Views: welcome and setup ----------
+function vWelcome() {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  let install = '';
+  if (installEvent) install = '<button class="link" data-act="install" style="color:#fff">Install the app</button>';
+  else if (ios && !standalone) install = 'On iPhone: tap Share, then Add to Home Screen.';
+  return `<div class="welcome">
+    <div class="logo"><img src="/icons/icon.svg" alt="">Bargo</div>
+    <div>
+      <div class="route-art" aria-hidden="true">
+        <svg viewBox="0 0 320 150"><path d="M40 120 C 40 60, 270 110, 270 40" fill="none" stroke="#fff" stroke-opacity=".9" stroke-width="7" stroke-linecap="round" stroke-dasharray="2 14"/>
+        <circle cx="40" cy="122" r="13" fill="#fff"/><circle cx="40" cy="122" r="5" fill="#005357"/><circle cx="270" cy="38" r="15" fill="#f4b400"/>
+        <g class="tag"><rect x="108" y="38" width="104" height="38" rx="19" fill="#fff"/><text x="160" y="63" text-anchor="middle" font-size="18" font-weight="700" fill="#005357" font-family="Poppins, sans-serif">₦3,500</text></g></svg>
+      </div>
+      <h1>Book a courier. Agree the price.</h1>
+      <p>Name your price. Couriers accept or counter. When you both agree, the deal is sealed.</p>
+      <div class="btns">
+        <button class="btn" data-act="role" data-role="sender">Send a package</button>
+        <button class="btn ghost" data-act="role" data-role="driver">Deliver as a courier</button>
+      </div>
+    </div>
+    <p class="foot">${install ? install + '<br>' : ''}<button class="link" data-act="role" data-role="admin" style="color:#cfe6e6;font-weight:500">Admin</button></p>
+  </div>`;
 }
 
-// ---------- Customer ----------
-function custHome() {
-  const ds = A.feed ? A.feed.deliveries : [];
-  const active = ds.filter((d) => ['sealed', 'picked_up'].includes(d.status));
-  const open = ds.filter((d) => d.status === 'open');
-  let h = topBar(A.user.name, 'Welcome back');
-  h += '<div class="pad">';
-  if (active.length) {
-    h += `<p class="sm muted">You have ${active.length} ${active.length === 1 ? 'delivery' : 'deliveries'} in progress</p>` + active.map((d) =>
-      `<button type="button" class="banner" data-do="go" data-to="delivery" data-id="${d.id}"><span class="chip warn">${esc(STATUS[d.status][0])}</span><strong>Delivery #${d.id}</strong><span class="sm">To ${esc(d.recipientName)}, ${routeText(d)}</span><span class="sm"><b>${naira(d.agreedPrice)}</b> agreed</span></button>`).join('');
-  }
-  if (open.length) {
-    h += `<p class="sm muted">Waiting for riders</p>` + open.map((d) => {
-      const n = d.threads.filter((t) => t.status === 'active').length;
-      return `<button type="button" class="banner calm" data-do="go" data-to="delivery" data-id="${d.id}"><strong>Delivery #${d.id}: ${routeText(d)}</strong><span class="sm">${n ? `${n} offer${n === 1 ? '' : 's'} to review` : 'No offers yet'}. You asked ${naira(d.askPrice)}.</span></button>`;
-    }).join('');
-  }
-  h += `<hr><p class="label">What would you like to do?</p>
-    <button type="button" class="mintcard" data-do="new">${ic('bolt', 28)}<strong>Request a delivery</strong><span>Name your price. Riders accept or counter, and you choose the offer you like.</span></button>`;
-  const recent = ds.filter((d) => ['delivered', 'cancelled'].includes(d.status)).slice(0, 3);
-  if (recent.length) h += `<p class="label">Recent</p><div class="list">${recent.map((d) => deliveryRow(d)).join('')}</div>`;
-  return h + '</div>';
-}
-function custList() {
-  const ds = A.feed ? A.feed.deliveries : [];
-  return `${topBar('Deliveries', 'All your requests')}<div class="pad">${ds.length ? `<div class="list">${ds.map((d) => deliveryRow(d)).join('')}</div>` : empty('No deliveries yet. Request one from the Home tab.')}</div>`;
+function vSenderSetup() {
+  const p = ui.prof;
+  return `<div class="top"><button class="icon-btn" data-act="leave" aria-label="Back">${ic('back')}</button></div>
+    <h2 class="title">Your details</h2><p class="sub" style="margin:.3rem 0 1.2rem">Couriers see your first name. Your phone number is shared only after a deal is sealed.</p>
+    <form data-form="setup">
+      <label class="field"><span>Your name</span><input class="input" required maxlength="60" autocomplete="name" data-bind="prof.name" value="${esc(p.name ?? me.name)}"></label>
+      <label class="field"><span>Phone number</span><input class="input" required maxlength="20" inputmode="tel" autocomplete="tel" data-bind="prof.phone" value="${esc(p.phone ?? me.phone)}"></label>
+      <button class="btn" type="submit">Continue</button>
+    </form>`;
 }
 
-function resetWizard() {
-  Object.keys(A.ui).filter((k) => k.startsWith('w.')).forEach((k) => delete A.ui[k]);
-  Object.assign(A.ui, {
-    'w.step': 1, 'w.pickupId': 'station', 'w.dropoffId': 'mall', 'w.vehicle': 'bike', 'w.item': A.cfg.items[0],
-    'w.quantity': '1', 'w.payer': 'sender', 'w.payMethod': 'cash',
-  });
-}
-function wizard() {
-  const u = A.ui, step = u['w.step'] || 1;
-  const names = ['Where to?', 'Details', 'Your price'];
-  const back = `<header class="bar"><button type="button" class="back" data-do="${step === 1 ? 'go' : 'wiz-back'}" data-to="home" aria-label="Back">${ic('back', 26)}</button><h1>${names[step - 1]}</h1><span class="stepno">Step ${step} of 3</span></header>`;
-  const areas = A.cfg.places.map((p) => [p.id, p.name]);
-  if (step === 1) {
-    return `${back}<div class="pad stack">${mapSvg({ pickup: placeOf(u['w.pickupId']), dropoff: placeOf(u['w.dropoffId']) })}
-      ${selectField('Pickup area', 'w.pickupId', areas)}${field('Pickup street address', 'w.pickupAddress', { ph: '32 Samwell Sq', max: 120 })}
-      ${selectField('Drop-off area', 'w.dropoffId', areas)}${field('Drop-off street address', 'w.dropoffAddress', { ph: '21b Karimu Kotun Street', max: 120 })}
-      ${vehicleTiles('w.vehicle')}
-      <button type="button" class="btn primary block" data-do="wiz-next">Next</button></div>`;
+function vDriverPick() {
+  const list = ui.drivers;
+  let h = `<div class="top"><button class="icon-btn" data-act="leave" aria-label="Back">${ic('back')}</button></div>
+    <h2 class="title">Who is driving?</h2><p class="sub" style="margin:.3rem 0 1.2rem">Choose your courier profile, or register a new one.</p>`;
+  if (!list) h += '<p class="empty">Loading couriers...</p>';
+  else h += list.map((d) => `<button class="pick" data-act="pick-driver" data-id="${esc(d.id)}"><span class="avatar">${esc(d.name[0])}</span><span class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></span>${ic(d.vehicle)}</button>`).join('');
+  h += `<button class="link" data-act="toggle-reg">${ui.showReg ? 'Hide registration' : 'Register as a new courier'}</button>`;
+  if (ui.showReg) {
+    const r = ui.reg;
+    h += `<form data-form="register" style="margin-top:.8rem">
+      <label class="field"><span>Full name</span><input class="input" required maxlength="60" data-bind="reg.name" value="${esc(r.name ?? '')}"></label>
+      <label class="field"><span>Phone number</span><input class="input" required maxlength="20" inputmode="tel" data-bind="reg.phone" value="${esc(r.phone ?? '')}"></label>
+      <div class="vehicles">${['bike', 'car', 'van'].map((v) => `<button type="button" class="vehicle" data-act="reg-veh" data-v="${v}" aria-pressed="${(r.vehicle || 'bike') === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
+      <label class="field"><span>Plate number</span><input class="input" required maxlength="15" data-bind="reg.plate" value="${esc(r.plate ?? '')}"></label>
+      <button class="btn" type="submit">Register</button></form>`;
   }
-  if (step === 2) {
-    return `${back}<div class="pad stack">
-      ${selectField('What are you sending?', 'w.item', A.cfg.items.map((i) => [i, i]))}
-      ${field('Quantity', 'w.quantity', { type: 'number', mode: 'numeric', max: 2 })}
-      ${seg('Who pays the rider?', 'w.payer', [['sender', 'Me'], ['recipient', 'Recipient']])}
-      ${seg('How will they pay?', 'w.payMethod', [['cash', 'Cash'], ['transfer', 'Bank transfer']])}
-      <p class="sm muted">You pay the rider directly. RideDispatch does not handle the money.</p>
-      ${field('Recipient name', 'w.recipientName', { max: 60 })}
-      ${field('Recipient phone number', 'w.recipientPhone', { type: 'tel', mode: 'tel', max: 20 })}
-      ${field('Note for the rider (optional)', 'w.note', { area: true, max: 200, ph: 'Fragile. Call on arrival.' })}
-      <p class="sm muted">Riders only see the recipient details after you agree on a price.</p>
-      <button type="button" class="btn primary block" data-do="wiz-next">Next</button></div>`;
-  }
-  const e = u['w.est'];
-  return `${back}<div class="pad stack">
-    <div class="card"><strong>${esc(placeOf(u['w.pickupId']).name)} to ${esc(placeOf(u['w.dropoffId']).name)}</strong>
-      <p class="sm muted">${esc(u['w.item'])} x${esc(u['w.quantity'])}, ${esc(A.cfg.vehicles[u['w.vehicle']].label)}${e ? `, about ${e.km} km` : ''}</p></div>
-    ${e ? `<div class="hint"><strong>Riders usually ask ${naira(e.low)} to ${naira(e.high)}</strong><span class="sm">Suggested starting price: ${naira(e.suggested)}</span></div>` : ''}
-    <label class="field"><span>Your price (naira)</span><div class="priceinput"><button type="button" class="step" data-do="price-adj" data-d="-100" aria-label="Lower by 100">-</button>
-      <input data-k="w.price" inputmode="numeric" value="${esc(u['w.price'] ?? '')}" aria-label="Your price in naira"><button type="button" class="step" data-do="price-adj" data-d="100" aria-label="Raise by 100">+</button></div></label>
-    <p class="sm muted">Riders can accept this price or counter it. You only agree when you accept an offer, and the minimum is ${naira(A.cfg.settings.minPrice)}.</p>
-    <button type="button" class="btn primary block" data-do="wiz-post">Post request</button></div>`;
+  return h;
 }
 
-function threadHTML(d, t) {
-  const key = `${d.id}:${t.courierId}`;
-  const c = t.courier || { name: 'Rider', vehicle: 'bike', rating: 5, completed: 0 };
-  const hist = t.history.filter((x) => !x.accepted).map((x) => `${x.by === 'customer' ? 'You' : 'Rider'} ${naira(x.price)}`).join(', then ');
-  let h = `<article class="thread"><div class="who"><span class="avatar sm">${esc(initials(c.name))}</span><div><strong>${esc(c.name)}</strong>
-    <span class="sm muted">${esc(A.cfg.vehicles[c.vehicle] ? A.cfg.vehicles[c.vehicle].label : c.vehicle)}, ${stars(c.rating)}, ${c.completed} trips</span></div><span class="money big">${naira(t.price)}</span></div>
-    <p class="sm muted">${esc(hist)}</p>`;
-  if (t.status === 'active') {
-    if (t.turn === 'customer') h += `<p class="sm"><b>${esc(c.name.split(' ')[0])} asks ${naira(t.price)}.</b> Accept, counter, or decline.</p>`;
-    else h += `<p class="sm">You offered ${naira(t.price)}. Waiting for their reply.</p>`;
-    h += counterBox(key, t.price, d.id, t.courierId);
-    h += `<div class="actions">${t.turn === 'customer' ? `<button type="button" class="btn primary small" data-do="accept" data-id="${d.id}" data-courier="${t.courierId}">Accept ${naira(t.price)}</button>` : ''}
-      <button type="button" class="btn ghost small" data-do="counter-toggle" data-key="${key}" data-price="${t.price}">${t.turn === 'customer' ? 'Counter' : 'Change offer'}</button>
-      <button type="button" class="btn danger small" data-do="leave" data-id="${d.id}" data-courier="${t.courierId}">Decline</button></div>`;
-  } else h += `<p class="sm muted">${{ declined: 'You declined this rider.', withdrawn: 'This rider walked away.', closed: 'Closed.', accepted: 'Deal sealed.' }[t.status] || ''}</p>`;
+// ---------- Views: sender ----------
+function vSHome() {
+  const jobs = data?.jobs || [];
+  const live = jobs.filter((j) => OPEN.includes(j.status));
+  const needs = jobs.reduce((s, j) => s + turnCount(j), 0);
+  let h = `<div class="greet"><div><small>Welcome back</small><strong>${esc(me.name)}</strong></div><span class="avatar">${esc(me.name[0] || '?')}</span></div>`;
+  if (live.length) {
+    const j = live[0];
+    h += `<article class="banner" role="link" tabindex="0" data-act="open-job" data-id="${j.id}" style="cursor:pointer">
+      ${needs ? `<span class="badge">${needs} ${needs === 1 ? 'offer needs' : 'offers need'} you</span>` : ''}
+      <small class="muted">You have ${live.length} ${live.length === 1 ? 'delivery' : 'deliveries'} in progress</small>
+      <b>#${j.id} ${esc(j.itemType)}</b>
+      <small>Recipient: ${esc(j.recipientName)}</small><br>
+      <small><b style="display:inline;color:var(--amber)">${j.status === 'open' ? (j.negotiations.length ? `${j.negotiations.length} courier ${j.negotiations.length === 1 ? 'offer' : 'offers'}` : 'Waiting for offers') : STATUS[j.status]}</b></small>
+    </article>`;
+  }
+  h += `<p class="h3" style="margin-top:0">What would you like to do?</p>
+    <button class="choice" data-act="start-new" data-type="instant">${ic('bolt', 'lg')}<b>Instant Delivery</b><span>A courier picks up your package as soon as you agree a price</span>${ic('bolt', 'bg')}</button>
+    <button class="choice alt" data-act="start-new" data-type="scheduled">${ic('clock', 'lg')}<b>Schedule Delivery</b><span>A courier comes at the date and time you choose</span>${ic('clock', 'bg')}</button>
+    <p class="tip">You set the first price. Couriers can accept it or counter. You only pay once you accept a price.</p>`;
+  return h;
+}
+
+function vSNew() {
+  const d = ui.draft || (ui.draft = defaultDraft('instant'));
+  const places = meta.places;
+  const opts = (sel) => places.map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  const bar = `<div class="steps">${[1, 2, 3].map((n) => `<i class="${n <= ui.step ? 'on' : ''}"></i>`).join('')}</div>`;
+  const top = `<div class="top"><button class="icon-btn" data-act="new-back" aria-label="Back">${ic('back')}</button></div>`;
+  const err = ui.error ? `<p class="err" role="alert">${esc(ui.error)}</p>` : '';
+  if (ui.step === 1) {
+    return `${top}<h2 class="title">${d.type === 'scheduled' ? 'Schedule Delivery' : 'Instant Delivery'}</h2>${bar}
+      <label class="field"><span>Pickup area</span><select class="input" data-bind="draft.pickupAreaId">${opts(d.pickupAreaId)}</select></label>
+      <label class="field"><span>Pickup address</span><input class="input" maxlength="120" placeholder="32 Samwell Sq, Chevron" data-bind="draft.pickupAddress" value="${esc(d.pickupAddress)}"></label>
+      <label class="field"><span>Delivery area</span><select class="input" data-bind="draft.dropAreaId">${opts(d.dropAreaId)}</select></label>
+      <label class="field"><span>Delivery address</span><input class="input" maxlength="120" placeholder="21b Karimu Kotun Street" data-bind="draft.dropAddress" value="${esc(d.dropAddress)}"></label>
+      <p class="sub" style="margin-bottom:.4rem">Vehicle type</p>
+      <div class="vehicles">${['bike', 'car', 'van'].map((v) => `<button type="button" class="vehicle" data-act="veh" data-v="${v}" aria-pressed="${d.vehicle === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
+      ${d.type === 'scheduled' ? `<label class="field"><span>Pickup date and time</span><input class="input" type="datetime-local" data-bind="draft.scheduledAt" value="${esc(d.scheduledAt)}"></label>` : ''}
+      ${err}<button class="btn" data-act="new-next" style="margin-top:.6rem">Next</button>`;
+  }
+  if (ui.step === 2) {
+    return `${top}<h2 class="title">Details</h2>${bar}
+      <label class="field"><span>What are you sending?</span><select class="input" data-bind="draft.itemType"><option value="">Select</option>${meta.items.map((i) => `<option ${d.itemType === i ? 'selected' : ''}>${esc(i)}</option>`).join('')}</select></label>
+      <div class="two"><label class="field"><span>Quantity</span><input class="input" type="number" min="1" max="999" data-num="1" data-bind="draft.quantity" value="${esc(d.quantity)}"></label>
+      <label class="field"><span>Note (optional)</span><input class="input" maxlength="200" placeholder="Fragile" data-bind="draft.note" value="${esc(d.note)}"></label></div>
+      <p class="sub" style="margin:-.3rem 0 .9rem">Weapons, drugs and anything illegal are not allowed.</p>
+      <label class="field"><span>Recipient name</span><input class="input" maxlength="60" data-bind="draft.recipientName" value="${esc(d.recipientName)}"></label>
+      <label class="field"><span>Recipient phone number</span><input class="input" inputmode="tel" maxlength="20" data-bind="draft.recipientPhone" value="${esc(d.recipientPhone)}"></label>
+      <p class="sub" style="margin-bottom:.3rem">Who pays the courier?</p>
+      <div class="radios"><label><input type="radio" name="payer" value="sender" data-bind="draft.payer" ${d.payer === 'sender' ? 'checked' : ''}>Me</label><label><input type="radio" name="payer" value="recipient" data-bind="draft.payer" ${d.payer === 'recipient' ? 'checked' : ''}>Recipient</label></div>
+      <label class="field"><span>Payment type</span><select class="input" data-bind="draft.payment"><option value="cash" ${d.payment === 'cash' ? 'selected' : ''}>Cash to courier</option><option value="transfer" ${d.payment === 'transfer' ? 'selected' : ''}>Bank transfer to courier</option></select></label>
+      ${err}<button class="btn" data-act="new-next">Next</button>`;
+  }
+  const e = ui.est || { km: 0, minutes: 0, fare: 0 };
+  return `${top}<h2 class="title">Your price</h2>${bar}
+    <div class="panel"><div class="row between"><b>${esc(places.find((p) => p.id === d.pickupAreaId).name)} ${ic('arrow')} ${esc(places.find((p) => p.id === d.dropAreaId).name)}</b>${ic(d.vehicle)}</div>
+    <p class="sub">${esc(d.itemType)}, ${esc(vlabel(d.vehicle))}, about ${e.km} km</p></div>
+    <p class="sub" style="margin-bottom:.4rem">Your offer to couriers</p>${stepper('draft.price', d.price)}
+    <p class="sub" style="margin:.5rem 0 1rem">Suggested for this trip: <b>${money(e.fare)}</b>. Couriers can accept your price or send a counter-offer. The deal is sealed when you both agree.</p>
+    ${err}<button class="btn" data-act="post-job">Post request</button>`;
+}
+
+function jobCardS(j) {
+  const t = turnCount(j);
+  const price = j.agreedPrice || j.openingPrice;
+  return `<article class="jcard ${t ? 'hot' : ''}" role="link" tabindex="0" data-act="open-job" data-id="${j.id}">
+    <div class="head"><div><h4>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></h4><div class="route-line">${route(j)}</div></div>${chip(j)}</div>
+    <div class="row between" style="margin-top:.5rem"><span class="price">${money(price)}${j.agreedPrice ? '' : ' <small class="muted">your offer</small>'}</span>
+    ${t ? `<span class="badge">${t} ${t === 1 ? 'offer needs' : 'offers need'} you</span>` : j.status === 'open' ? `<small class="muted">${j.negotiations.filter((n) => n.status === 'active').length} offers</small>` : ''}</div></article>`;
+}
+
+function vSJobs() {
+  const jobs = data?.jobs || [];
+  const live = jobs.filter((j) => OPEN.includes(j.status)), past = jobs.filter((j) => !OPEN.includes(j.status));
+  let h = '<h2 class="title" style="margin-bottom:1rem">Deliveries</h2>';
+  if (!jobs.length) return h + empty('box', 'No deliveries yet. Book one from Home.') + '<button class="btn" data-act="tab" data-tab="home">Book a delivery</button>';
+  if (live.length) h += '<p class="h3" style="margin-top:0">In progress</p>' + live.map(jobCardS).join('');
+  if (past.length) h += '<p class="h3">Past</p>' + past.map(jobCardS).join('');
+  return h;
+}
+
+function offerCardS(j, n) {
+  const last = n.history[n.history.length - 1];
+  const key = `${j.id}:${n.driverId}`;
+  const turn = n.status === 'active' && n.turn === 'sender';
+  const d = n.driver;
+  let h = `<section class="offer ${turn ? 'turn' : ''} ${n.status !== 'active' ? 'dead' : ''}">
+    <div class="row"><span class="avatar">${esc(d.name[0])}</span><div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars (${d.ratingCount})</small></div>${ic(d.vehicle)}</div>
+    ${thread(n.history, 'sender')}`;
+  if (n.status === 'active' && turn) {
+    const open = ui.open[key];
+    h += `<div class="btns"><button class="btn" data-act="s-accept" data-id="${j.id}" data-driver="${esc(n.driverId)}">Accept ${money(last.price)}</button></div>
+      <div class="btns"><button class="btn line sm" data-act="toggle-counter" data-key="${esc(key)}" data-price="${last.price}">${open ? 'Hide counter' : 'Counter'}</button><button class="btn danger sm" data-act="s-decline" data-id="${j.id}" data-driver="${esc(n.driverId)}">Decline</button></div>`;
+    if (open) {
+      const val = ui.counter[key] ?? last.price;
+      h += `<div class="counter-box"><p class="sub" style="margin-bottom:.4rem">Your counter-offer</p>${stepper('counter.' + key, val, 'sm')}
+        <button class="btn sm" style="margin-top:.6rem" data-act="s-counter" data-id="${j.id}" data-driver="${esc(n.driverId)}" data-key="${esc(key)}">Send counter</button></div>`;
+    }
+  } else if (n.status === 'active') h += `<p class="wait">Waiting for ${esc(d.name.split(' ')[0])} to respond to ${money(last.price)}.</p>`;
+  else h += `<p class="wait">${{ declined: 'You declined this offer.', withdrawn: 'The courier withdrew.', closed: 'Closed after another deal was sealed.', sealed: 'Deal sealed.' }[n.status] || ''}</p>`;
+  return h + '</section>';
+}
+
+function sealedBanner(j, who) {
+  const anim = !ui.seen.has(j.id) ? 'anim' : '';
+  ui.seen.add(j.id);
+  return `<div class="sealed ${anim}"><svg class="ring" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="24"/><path d="M14 25l7 7 13-15"/></svg>
+    <div><b>Deal sealed at ${money(j.agreedPrice)}</b><span class="small">${who}</span></div></div>`;
+}
+
+function progress(j) {
+  const order = ['agreed', 'picked_up', 'delivered'];
+  const at = order.indexOf(j.status);
+  return `<div class="progress">${order.map((s, i) => `<div class="${i <= at ? 'done' : ''}"><i></i>${STEP_LABEL[s]}</div>`).join('')}</div>`;
+}
+
+function vSJob() {
+  const j = senderJob(nav.cur.id);
+  const top = `<div class="top"><button class="icon-btn" data-act="back" aria-label="Back">${ic('back')}</button><h2 class="title grow">Delivery #${nav.cur.id}</h2></div>`;
+  if (!j) return top + empty('box', 'This delivery could not be found.');
+  let h = top + miniMap(j) + `<div class="row between"><b>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></b>${chip(j)}</div>
+    <div class="kv"><div><small>Pickup</small><span>${esc(j.pickup.address)}, ${esc(j.pickup.area)}</span></div><div><small>Delivery</small><span>${esc(j.drop.address)}, ${esc(j.drop.area)}</span></div>
+    <div><small>Recipient</small><span>${esc(j.recipientName)}</span></div><div><small>Vehicle</small><span>${esc(vlabel(j.vehicle))}, ${j.km} km</span></div>
+    ${j.scheduledAt ? `<div class="full"><small>Pickup time</small><span>${fmtDate(j.scheduledAt)}</span></div>` : ''}</div>`;
+  if (j.status === 'open') {
+    h += `<div class="panel"><div class="row between"><span class="sub">Your offer</span><b class="price">${money(j.openingPrice)}</b></div></div>`;
+    const live = j.negotiations.filter((n) => n.status === 'active'), rest = j.negotiations.filter((n) => n.status !== 'active');
+    h += `<p class="h3">Offers from couriers</p>`;
+    h += live.length ? live.map((n) => offerCardS(j, n)).join('') : empty('bike', `No offers yet. Online couriers with a ${vlabel(j.vehicle).toLowerCase()} can see your request now.`);
+    h += rest.map((n) => offerCardS(j, n)).join('');
+  } else if (j.driver && j.status !== 'cancelled') {
+    const d = j.driver;
+    h += sealedBanner(j, j.status === 'delivered' ? 'Delivered. Thank you for using Bargo.' : `You pay ${j.payment === 'cash' ? 'cash' : 'by bank transfer'} to the courier.`);
+    h += progress(j);
+    h += `<div class="panel"><div class="row"><span class="avatar">${esc(d.name[0])}</span><div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars</small></div>
+      <a class="btn sm" style="width:auto;text-decoration:none" href="tel:${esc(d.phone)}">${ic('phone')}</a></div></div>`;
+    const sealed = j.negotiations.find((n) => n.status === 'sealed');
+    if (sealed) h += `<p class="h3">How you agreed</p>${thread(sealed.history, 'sender')}`;
+    if (j.status === 'delivered') {
+      h += j.rating ? `<p class="sub">You rated this delivery ${j.rating} out of 5.</p>`
+        : `<p class="h3">Rate ${esc(d.name.split(' ')[0])}</p><div class="stars">${[1, 2, 3, 4, 5].map((n) => `<button data-act="rate" data-id="${j.id}" data-n="${n}" aria-label="${n} stars">${n}★</button>`).join('')}</div>`;
+    }
+  } else if (j.status === 'cancelled') h += empty('box', 'This delivery was cancelled.');
+  if (['open', 'agreed'].includes(j.status)) h += `<button class="btn danger" style="margin-top:1rem" data-act="s-cancel" data-id="${j.id}">Cancel delivery</button>`;
+  return h;
+}
+
+// ---------- Views: courier ----------
+function jobCardD(j, actions) {
+  const n = j.negotiation;
+  const turn = n && n.status === 'active' && n.turn === 'driver';
+  const last = n ? n.history[n.history.length - 1].price : j.openingPrice;
+  let h = `<article class="jcard ${turn ? 'hot' : ''}" role="link" tabindex="0" data-act="open-job" data-id="${j.id}">
+    <div class="head"><div><h4>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></h4><div class="route-line">${route(j)}</div></div><span class="price">${money(j.agreedPrice || last)}</span></div>
+    <div class="route-line" style="margin-top:.35rem">${ic('pin')}${esc(j.drop.address)} &middot; ${j.km} km${j.scheduledAt ? ' &middot; ' + fmtDate(j.scheduledAt) : ''}</div>`;
+  if (n && n.status === 'active') h += `<p class="small" style="margin-top:.4rem;color:var(--amber);font-weight:600">${turn ? `Sender countered ${money(last)}` : `Waiting for sender (you asked ${money(last)})`}</p>`;
+  if (actions) {
+    h += `<div class="btns"><button class="btn soft" data-act="d-reject" data-id="${j.id}">Reject</button><button class="btn line" data-act="open-job" data-id="${j.id}">Counter</button><button class="btn" data-act="d-accept" data-id="${j.id}">Accept</button></div>`;
+  }
   return h + '</article>';
 }
-function counterBox(key, price, id, courierId) {
-  if (!A.ui['c.open.' + key]) return '';
-  return `<div class="counter"><input data-k="c.${key}" inputmode="numeric" value="${esc(A.ui['c.' + key] ?? price)}" aria-label="Your offer in naira">
-    <button type="button" class="btn primary small" data-do="counter-send" data-id="${id}" ${courierId ? `data-courier="${courierId}"` : ''} data-key="${key}">Send offer</button></div>`;
+
+function onlineSwitch() {
+  const d = data.driver, on = d.status === 'online';
+  return `<label class="switch" title="${on ? 'Online' : 'Offline'}"><input type="checkbox" data-act="toggle-online" ${on ? 'checked' : ''} aria-label="Online"><i></i></label>`;
 }
 
-function custDelivery() {
-  const d = (A.feed ? A.feed.deliveries : []).find((x) => String(x.id) === String(A.route.id));
-  if (!d) return `${backBar('Delivery', 'list')}<div class="pad">${empty('We could not find this delivery.')}</div>`;
-  let h = `${backBar('Delivery #' + d.id, 'list')}<div class="pad stack">`;
-  h += `<div class="between">${chip(d)}<span class="money big">${naira(d.agreedPrice || d.askPrice)}</span></div>`;
-  h += mapSvg({ pickup: d.pickup, dropoff: d.dropoff, courier: d.courier && ['sealed', 'picked_up'].includes(d.status) ? d.courier : null });
-  h += `<div class="card"><p><b>From</b> ${esc(d.pickup.name)}<br><span class="sm muted">${esc(d.pickup.address)}</span></p><p><b>To</b> ${esc(d.dropoff.name)}<br><span class="sm muted">${esc(d.dropoff.address)}</span></p>
-    <p class="sm muted">${esc(d.item)} x${d.quantity}, ${esc(A.cfg.vehicles[d.vehicle].label)}, ${d.km} km. ${d.payer === 'sender' ? 'You pay' : 'Recipient pays'} by ${esc(d.payMethod)}.</p>
-    <p class="sm muted">Recipient: ${esc(d.recipientName)}, ${esc(d.recipientPhone)}</p></div>`;
-  if (d.status === 'open') {
-    const live = d.threads.filter((t) => t.status === 'active'), past = d.threads.filter((t) => t.status !== 'active');
-    h += `<h2 class="h2">Offers</h2>`;
-    h += live.length ? live.map((t) => threadHTML(d, t)).join('') : empty(`No offers yet. Riders nearby can see your request, asking ${naira(d.askPrice)}. This page updates by itself.`);
-    if (past.length) h += `<details class="past"><summary>Earlier offers (${past.length})</summary>${past.map((t) => threadHTML(d, t)).join('')}</details>`;
-    h += `<button type="button" class="btn danger block" data-do="cancel" data-id="${d.id}">Cancel request</button>`;
-  } else if (d.courier && d.status !== 'cancelled') {
-    const c = d.courier;
-    h += `<div class="card ok"><strong>Deal sealed at ${naira(d.agreedPrice)}</strong>
-      <p class="sm">${d.status === 'sealed' ? 'Your rider is heading to the pickup point.' : d.status === 'picked_up' ? 'Your package is on its way.' : 'Delivered. Thank you for using RideDispatch.'}</p>
-      <p><b>${esc(c.name)}</b>, ${esc(A.cfg.vehicles[c.vehicle].label)}, plate ${esc(c.plate)}<br><span class="sm muted">${stars(c.rating)}, ${c.completed} trips</span></p>
-      <a class="btn ghost small" href="tel:${esc(c.phone)}">Call rider</a></div>`;
-    if (d.status === 'sealed') h += `<button type="button" class="btn danger block" data-do="cancel" data-id="${d.id}">Cancel delivery</button>`;
-    if (d.status === 'delivered') {
-      h += d.rating ? `<p class="center muted">You rated this trip ${d.rating} out of 5.</p>` :
-        `<div class="card"><strong>Rate your rider</strong><div class="stars" role="group" aria-label="Rate your rider">${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-do="rate" data-id="${d.id}" data-n="${n}" aria-label="${n} stars">${n}★</button>`).join('')}</div></div>`;
-    }
-  } else if (d.status === 'cancelled') h += empty('This delivery was cancelled.');
-  return h + '</div>';
-}
-
-// ---------- Courier ----------
-function reqCard(d) {
-  const t = d.myThread, online = A.user.courier.online, key = `${d.id}:me`;
-  let h = `<article class="req"><div class="between"><span class="vh">${ic(d.vehicle, 26)}<span><strong>${esc(d.item)} x${d.quantity}</strong><span class="sm muted">From ${esc(d.customerName)}</span></span></span>
-    <span class="right"><span class="sm muted">${t ? 'Latest' : 'Asking'}</span><span class="money big">${naira(t ? t.price : d.askPrice)}</span></span></div>
-    <p class="route"><b>${esc(d.pickup.name)}</b> <span class="sm muted">${esc(d.pickup.address)}</span><br><b>${esc(d.dropoff.name)}</b> <span class="sm muted">${esc(d.dropoff.address)}</span></p>
-    <p class="sm muted">${d.km} km, about ${d.minutes} min. ${d.payer === 'sender' ? 'Sender pays' : 'Recipient pays'} by ${esc(d.payMethod)}.${d.note ? ` Note: ${esc(d.note)}` : ''}</p>`;
-  const price = t ? t.price : d.askPrice;
-  h += counterBox(key, price, d.id, null);
-  if (!online) h += '<p class="sm warnText">Go online to send offers.</p>';
-  if (t && t.turn === 'customer') h += `<p class="sm">Your offer is ${naira(t.price)}. Waiting for the customer.</p>`;
-  if (t && t.turn === 'courier') h += `<p class="sm"><b>The customer countered ${naira(t.price)}.</b></p>`;
-  h += `<div class="actions">`;
-  if (!t || t.turn === 'courier') h += `<button type="button" class="btn primary small" data-do="accept" data-id="${d.id}" ${online ? '' : 'disabled'}>Accept ${naira(price)}</button>`;
-  h += `<button type="button" class="btn ghost small" data-do="counter-toggle" data-key="${key}" data-price="${price}" ${online ? '' : 'disabled'}>${t && t.turn === 'customer' ? 'Change offer' : 'Counter'}</button>`;
-  h += t ? `<button type="button" class="btn danger small" data-do="leave" data-id="${d.id}">Walk away</button>` : `<button type="button" class="btn ghost small" data-do="skip" data-id="${d.id}">Skip</button>`;
-  return h + '</div></article>';
-}
-function jobCard(j) {
-  const next = j.status === 'sealed' ? 'I have picked up the package' : 'I have delivered it';
-  return `<article class="req job"><div class="between"><span class="chip teal">${esc(STATUS[j.status][0])}</span><span class="money big">${naira(j.agreedPrice)}</span></div>
-    ${mapSvg({ pickup: j.pickup, dropoff: j.dropoff, courier: A.user.courier })}<p class="sm muted center">Tap the map to update your position.</p>
-    <p class="route"><b>Pickup</b> ${esc(j.pickup.name)} <span class="sm muted">${esc(j.pickup.address)}</span><br><b>Drop-off</b> ${esc(j.dropoff.name)} <span class="sm muted">${esc(j.dropoff.address)}</span></p>
-    <p class="sm">${esc(j.item)} x${j.quantity}. ${j.payer === 'sender' ? 'Sender pays' : 'Recipient pays'} by ${esc(j.payMethod)}, ${naira(j.agreedPrice)}.${j.note ? ` Note: ${esc(j.note)}` : ''}</p>
-    <div class="card"><p class="sm"><b>Recipient</b> ${esc(j.recipientName)}</p><div class="actions"><a class="btn ghost small" href="tel:${esc(j.recipientPhone)}">Call ${esc(j.recipientPhone)}</a>
-      ${j.customerPhone ? `<a class="btn ghost small" href="tel:${esc(j.customerPhone)}">Call customer</a>` : ''}</div></div>
-    <button type="button" class="btn primary block" data-do="advance" data-id="${j.id}">${next}</button></article>`;
-}
-function courHome() {
-  const F = A.feed || { available: [], mine: [], earnings: { today: {}, commissionPerDay: 500 } };
-  const c = A.user.courier, job = F.mine.find((d) => ['sealed', 'picked_up'].includes(d.status));
-  const e = F.earnings;
-  let h = topBar(A.user.name, 'Welcome back') + '<div class="pad">';
-  h += `<div class="toggle ${c.online ? 'on' : ''}"><div><strong>${c.online ? 'You are online' : 'You are offline'}</strong><span class="sm">${c.online ? 'Customers can see your offers.' : 'Go online to see requests and send offers.'}</span></div>
-    <button type="button" class="btn ${c.online ? 'ghost' : 'primary'} small" data-do="online" data-v="${c.online ? '0' : '1'}" ${job && c.online ? 'disabled' : ''}>${c.online ? 'Go offline' : 'Go online'}</button></div>`;
-  h += `<p class="sm muted commission">Flat ${naira(e.commissionPerDay)} per active day, taken after your first delivery of the day. Today: ${e.today.commission ? `${naira(e.today.commission)} charged` : 'not charged yet'}. Net today ${naira(e.today.net || 0)}.</p>`;
-  if (job) h += `<h2 class="h2">Current delivery</h2>${jobCard(job)}`;
-  else {
-    const list = F.available.filter((d) => !A.skipped.has(d.id) || d.myThread);
-    h += `<h2 class="h2">Available requests</h2>${list.length ? list.map(reqCard).join('') : empty(c.online ? `No ${A.cfg.vehicles[c.vehicle].label.toLowerCase()} requests right now. New ones appear here by themselves.` : 'You are offline.')}`;
+function vDHome() {
+  const f = data, d = f.driver, on = d.status === 'online';
+  let h = `<div class="greet"><div class="row"><span class="avatar">${esc(d.name[0])}</span><div><small>Welcome back</small><strong>${esc(d.name)}</strong></div></div><div class="row"><small class="muted">${on ? 'Online' : 'Offline'}</small>${onlineSwitch()}</div></div>`;
+  if (f.current.length) {
+    const j = f.current[0];
+    h += `<article class="banner" role="link" tabindex="0" data-act="open-job" data-id="${j.id}" style="cursor:pointer"><small class="muted">You have 1 delivery in progress</small><b>#${j.id} ${esc(j.itemType)}</b>
+      <small>Recipient: ${esc(j.recipientName || 'hidden')}</small><br><small><b style="display:inline;color:var(--amber)">${money(j.agreedPrice)} &middot; ${STATUS[j.status]}</b></small></article>`;
   }
-  return h + '</div>';
-}
-function courEarnings() {
-  const e = (A.feed && A.feed.earnings) || { today: {}, week: [], owed: 0, commissionPerDay: 500, totalDelivered: 0 };
-  return `${topBar('Earnings', 'Your money')}<div class="pad stack">
-    <div class="card big"><span class="sm muted">Net today</span><span class="money huge">${naira(e.today.net || 0)}</span>
-      <div class="three"><span><b>${e.today.deliveries || 0}</b><small>Deliveries</small></span><span><b>${naira(e.today.gross || 0)}</b><small>Earned</small></span><span><b>${naira(e.today.commission || 0)}</b><small>Commission</small></span></div></div>
-    <p class="sm muted">Commission is a flat ${naira(e.commissionPerDay)} for each day you complete at least one delivery, however many you do.</p>
-    ${e.owed ? `<div class="banner calm"><strong>${naira(e.owed)} commission to pay</strong><span class="sm">Settle with the RideDispatch admin.</span></div>` : ''}
-    <h2 class="h2">Last 7 days</h2><div class="list">${e.week.map((d) => `<div class="row static"><span><strong>${dateKeyLabel(d.date)}</strong><span class="sm muted">${d.deliveries} ${d.deliveries === 1 ? 'delivery' : 'deliveries'}, earned ${naira(d.gross)}, commission ${naira(d.commission)}</span></span><span class="money">${naira(d.net)}</span></div>`).join('')}</div></div>`;
-}
-function courList() {
-  const ds = A.feed ? A.feed.mine : [];
-  return `${topBar('Deliveries', 'Your jobs')}<div class="pad">${ds.length ? `<div class="list">${ds.map((d) => deliveryRow(d, true)).join('')}</div>` : empty('No deliveries yet. Accept a request from the Home tab.')}</div>`;
+  if (f.offers.length) h += `<p class="h3" style="margin-top:0">Your offers</p>${f.offers.map((j) => jobCardD(j, false)).join('')}`;
+  h += `<div class="row between"><p class="h3" style="margin:.2rem 0 .6rem">Available requests</p></div>`;
+  if (!on) h += `<p class="notice">You are offline. Go online to see and take requests.</p>`;
+  else if (f.current.length) h += `<p class="notice">Finish your current delivery to take another.</p>` + f.available.map((j) => jobCardD(j, false)).join('');
+  else h += f.available.length ? f.available.map((j) => jobCardD(j, true)).join('') : empty('bike', `No requests for a ${vlabel(d.vehicle).toLowerCase()} right now. New ones appear here instantly.`);
+  return h;
 }
 
-// ---------- Profile ----------
-function profile() {
-  const u = A.user, c = u.courier;
-  return `${topBar('Profile', u.role === 'admin' ? 'Administrator' : u.role === 'courier' ? 'Dispatch rider' : 'Customer')}<div class="pad stack">
-    <div class="card"><p><b>${esc(u.name)}</b></p><p class="sm muted">${esc(u.phone)}</p>
-      ${c ? `<p class="sm">${esc(A.cfg.vehicles[c.vehicle].label)}, plate ${esc(c.plate)}</p><p class="sm muted">${stars(c.rating)} from ${c.ratingCount} ratings, ${c.completed} trips</p>` : ''}</div>
-    <button type="button" class="btn ghost block" data-do="signout">Sign out</button></div>`;
+function vDJob() {
+  const j = driverJob(nav.cur.id);
+  const top = `<div class="top"><button class="icon-btn" data-act="back" aria-label="Back">${ic('back')}</button><h2 class="title grow">Delivery #${nav.cur.id}</h2></div>`;
+  if (!j) return top + empty('box', 'This delivery is no longer available.') + '<button class="btn" data-act="back">Back to requests</button>';
+  const e = data.earnings;
+  let h = top + miniMap(j) + `<div class="row between"><b>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></b>${chip(j)}</div>
+    <div class="kv"><div><small>Pickup</small><span>${esc(j.pickup.address)}, ${esc(j.pickup.area)}</span></div><div><small>Delivery</small><span>${esc(j.drop.address)}, ${esc(j.drop.area)}</span></div>
+    <div><small>Distance</small><span>${j.km} km, ${esc(vlabel(j.vehicle))}</span></div><div><small>Payment</small><span>${j.payer === 'sender' ? 'Sender' : 'Recipient'} pays, ${j.payment === 'cash' ? 'cash' : 'transfer'}</span></div>
+    ${j.note ? `<div class="full"><small>Note</small><span>${esc(j.note)}</span></div>` : ''}${j.scheduledAt ? `<div class="full"><small>Pickup time</small><span>${fmtDate(j.scheduledAt)}</span></div>` : ''}</div>`;
+  if (j.mine && j.status !== 'cancelled') {
+    h += sealedBanner(j, j.status === 'delivered' ? 'Delivered.' : `You earn ${money(j.agreedPrice)} on this trip.`) + progress(j);
+    h += `<div class="panel"><p class="sub">Contacts</p>
+      <div class="row between" style="margin-top:.4rem"><span>Sender: <b>${esc(j.senderName)}</b></span>${j.senderPhone ? `<a class="link" href="tel:${esc(j.senderPhone)}">${esc(j.senderPhone)}</a>` : ''}</div>
+      <div class="row between" style="margin-top:.4rem"><span>Recipient: <b>${esc(j.recipientName)}</b></span><a class="link" href="tel:${esc(j.recipientPhone)}">${esc(j.recipientPhone)}</a></div></div>`;
+    if (j.status === 'agreed') h += `<button class="btn" data-act="d-pickup" data-id="${j.id}">I have picked up the package</button><button class="link" style="margin-top:.7rem" data-act="d-withdraw" data-id="${j.id}">Pull out of this delivery</button>`;
+    if (j.status === 'picked_up') h += `<button class="btn" data-act="d-deliver" data-id="${j.id}">Mark as delivered</button>`;
+    if (j.status !== 'delivered') h += `<p class="sub" style="margin-top:.8rem">${e.commissionDueToday ? `Your daily commission of ${money(e.commissionPerDay)} is charged when you complete your first delivery today.` : 'Your commission for today is already paid. This delivery costs you nothing extra.'}</p>`;
+    return h;
+  }
+  const n = j.negotiation;
+  if (j.status !== 'open' || (n && n.status !== 'active')) return h + `<p class="notice">${n && n.status === 'declined' ? 'The sender declined your offer.' : 'This delivery is no longer available.'}</p>`;
+  const key = `${j.id}:${data.driver.id}`;
+  const turn = !n || n.turn === 'driver';
+  const last = n ? n.history[n.history.length - 1].price : j.openingPrice;
+  if (n) h += `<p class="h3">Negotiation</p>${thread(n.history, 'driver')}`;
+  if (!turn) return h + `<p class="wait">Waiting for the sender to respond to your ${money(last)} offer.</p><button class="link" data-act="d-reject" data-id="${j.id}">Walk away from this delivery</button>`;
+  const val = ui.counter[key] ?? last;
+  h += `<div class="panel"><div class="row between"><span class="sub">${n ? 'Sender countered' : 'Sender offers'}</span><b class="price">${money(last)}</b></div></div>
+    <button class="btn" data-act="d-accept" data-id="${j.id}">Accept ${money(last)}</button>
+    <p class="h3">Or make a counter-offer</p>${stepper('counter.' + key, val, 'sm')}
+    <div class="btns"><button class="btn line" data-act="d-counter" data-id="${j.id}" data-key="${esc(key)}">Send counter</button><button class="btn soft" data-act="d-reject" data-id="${j.id}">${n ? 'Walk away' : 'Reject'}</button></div>
+    <p class="sub" style="margin-top:.8rem">Commission: ${money(e.commissionPerDay)} a day, charged once on your first delivery of the day.</p>`;
+  return h;
 }
 
-// ---------- Admin ----------
-function adminHome() {
-  const F = A.feed;
-  if (!F) return topBar('Overview', 'Admin') + '<div class="pad"></div>';
-  const t = F.totals;
-  const box = (n, l) => `<div><b>${n}</b><span>${l}</span></div>`;
-  return `${topBar('Overview', 'Admin')}<div class="pad stack"><div class="stats">${box(t.open, 'Open requests')}${box(t.active, 'In progress')}${box(t.delivered, 'Delivered')}${box(t.online + '/' + t.couriers, 'Riders online')}${box(t.customers, 'Customers')}${box(naira(t.owed), 'Commission owed')}</div>
-    <h2 class="h2">Recent deliveries</h2>${F.deliveries.length ? `<div class="list">${F.deliveries.slice(0, 25).map((d) =>
-    `<div class="row static"><span><strong>#${d.id} ${routeText(d)}</strong><span class="sm muted">${esc(d.customer)}${d.courier ? ' with ' + esc(d.courier) : ''}, ${d.threadCount} negotiat${d.threadCount === 1 ? 'ion' : 'ions'}</span></span><span class="right"><span class="money">${naira(d.agreedPrice || d.askPrice)}</span>${chip(d)}</span></div>`).join('')}</div>` : empty('No deliveries yet.')}</div>`;
+function vDEarn() {
+  const e = data.earnings;
+  let h = `<h2 class="title" style="margin-bottom:1rem">Earnings</h2>
+    <div class="stats"><div class="stat dark"><b>${money(e.net)}</b><small>You keep</small></div><div class="stat"><b>${money(e.gross)}</b><small>Deal value</small></div><div class="stat"><b>${money(e.commission)}</b><small>Commission</small></div></div>
+    <p class="notice">Commission is a flat ${money(e.commissionPerDay)} per working day, charged on your first delivery of the day. ${e.commissionDueToday ? 'Nothing charged yet today.' : 'Today is already covered.'}</p>`;
+  h += e.byDay.length ? e.byDay.map((x) => `<div class="list-row"><span><b>${dayLabel(x.date)}</b><br><small class="muted">${x.jobs} ${x.jobs === 1 ? 'delivery' : 'deliveries'}, ${money(x.gross)} less ${money(x.commission)}</small></span><b>${money(x.net)}</b></div>`).join('') : empty('wallet', 'Your earnings by day show up here after your first delivery.');
+  return h;
 }
-function adminCommission() {
-  const F = A.feed;
-  if (!F) return topBar('Commission', 'Admin') + '<div class="pad"></div>';
-  const t = F.totals;
-  return `${topBar('Commission', 'Flat ' + naira(F.settings.commissionPerDay) + ' per rider per active day')}<div class="pad stack">
-    <div class="stats two"><div><b>${naira(t.owed)}</b><span>Owed</span></div><div><b>${naira(t.collected)}</b><span>Collected</span></div></div>
-    <h2 class="h2">Riders</h2><div class="list">${F.couriers.length ? F.couriers.map((c) => `<div class="row static"><span><strong>${esc(c.name)}</strong><span class="sm muted">${esc(c.phone)}, ${c.completed} trips, ${c.online ? 'online' : 'offline'}</span></span>
-      <span class="right"><span class="money">${naira(c.owed)}</span>${c.owed ? `<button type="button" class="btn primary small" data-do="settle" data-id="${esc(c.id)}">Mark paid</button>` : '<span class="chip grey">Nothing owed</span>'}</span></div>`).join('') : empty('No riders yet.')}</div>
-    <h2 class="h2">Ledger</h2><div class="list">${F.ledger.length ? F.ledger.map((l) => `<div class="row static"><span><strong>${esc(l.courier)}</strong><span class="sm muted">${dateKeyLabel(l.date)}, delivery #${l.deliveryId}</span></span><span class="right"><span class="money">${naira(l.amount)}</span><span class="chip ${l.status === 'paid' ? 'good' : 'warn'}">${l.status === 'paid' ? 'Paid' : 'Owed'}</span></span></div>`).join('') : empty('Nothing charged yet. Commission is added when a rider completes their first delivery of the day.')}</div></div>`;
+
+function vDBook() {
+  const f = data;
+  let h = '<h2 class="title" style="margin-bottom:1rem">Bookings</h2>';
+  if (!f.current.length && !f.history.length) return h + empty('list', 'Deals you seal appear here.');
+  if (f.current.length) h += '<p class="h3" style="margin-top:0">In progress</p>' + f.current.map((j) => jobCardD(j, false)).join('');
+  if (f.history.length) h += '<p class="h3">Past</p>' + f.history.map((j) => jobCardD(j, false)).join('');
+  return h;
 }
-function adminSettings() {
-  const s = (A.feed && A.feed.settings) || A.cfg.settings;
-  return `${topBar('Settings', 'Admin')}<form class="pad stack" data-form="settings">
-    ${field('Commission per rider per active day (naira)', 's.commission', { value: s.commissionPerDay, mode: 'numeric', max: 6 })}
-    ${field('Minimum price for a delivery (naira)', 's.min', { value: s.minPrice, mode: 'numeric', max: 6 })}
-    <p class="sm muted">A new commission applies from the next rider-day charged. Entries already in the ledger keep their amount.</p>
-    <button class="btn primary block" type="submit">Save settings</button>
-    <button type="button" class="btn ghost block" data-do="signout">Sign out</button></form>`;
+
+function vProfile() {
+  const isD = me.role === 'driver';
+  let h = '<h2 class="title" style="margin-bottom:1rem">Profile</h2>';
+  if (isD) {
+    const d = data.driver;
+    h += `<div class="row" style="margin-bottom:1rem"><span class="avatar lg">${esc(d.name[0])}</span><div><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></div></div>
+      <div class="stats"><div class="stat"><b>${d.rating.toFixed(1)}</b><small>Rating</small></div><div class="stat"><b>${d.completed}</b><small>Deliveries</small></div><div class="stat"><b>${esc(d.phone || '')}</b><small>Phone</small></div></div>`;
+  } else {
+    h += `<div class="row" style="margin-bottom:1rem"><span class="avatar lg">${esc(me.name[0] || '?')}</span><div><b>${esc(me.name)}</b><br><small class="muted">${esc(me.phone)}</small></div></div>`;
+  }
+  h += `<button class="btn soft" data-act="leave">Switch role</button>`;
+  if (installEvent) h += `<button class="btn line" style="margin-top:.6rem" data-act="install">Install the app</button>`;
+  return h;
+}
+
+// ---------- Views: admin ----------
+function vAdmin() {
+  const head = `<div class="top"><button class="icon-btn" data-act="leave" aria-label="Back">${ic('back')}</button><h2 class="title grow">Admin</h2></div>`;
+  if (meta.adminPinRequired && !data) {
+    return `<div class="admin" style="max-width:380px">${head}<form data-form="admin-login"><label class="field"><span>Admin PIN</span><input class="input" type="password" inputmode="numeric" autocomplete="off" data-bind="pinf.pin" value="${esc(ui.pinf?.pin || '')}"></label>
+      ${ui.pinBad ? '<p class="err">That PIN is not correct.</p>' : ''}<button class="btn" type="submit">Open admin</button></form></div>`;
+  }
+  if (!data) return `<div class="admin">${head}<p class="empty">Loading...</p></div>`;
+  const t = data.totals;
+  return `<div class="admin">${head}
+    <div class="stats"><div class="stat dark"><b>${money(t.commission)}</b><small>Commission collected</small></div><div class="stat"><b>${money(t.dealValue)}</b><small>Deal value delivered</small></div>
+      <div class="stat"><b>${t.delivered}</b><small>Delivered</small></div><div class="stat"><b>${t.active}</b><small>On the road</small></div><div class="stat"><b>${t.open}</b><small>Open for offers</small></div></div>
+    <form class="panel" data-form="admin-save"><p class="sub">Daily commission per courier</p>
+      <div class="row" style="margin-top:.4rem"><input class="input" inputmode="numeric" data-num="1" data-bind="adm.commission" value="${esc(ui.adm?.commission ?? data.settings.commissionPerDay)}" style="max-width:180px" aria-label="Daily commission in naira"><button class="btn sm" style="width:auto" type="submit">Save</button></div>
+      <p class="sub" style="margin-top:.5rem">Charged once per courier on their first delivery of each day. Changes apply to later days. Past charges stay as they were.</p></form>
+    <div class="cols"><div><p class="h3">Couriers</p><div class="tbl-wrap"><table class="tbl"><tr><th>Courier</th><th>Status</th><th>Trips</th><th>Paid us</th></tr>
+      ${data.drivers.map((d) => `<tr><td><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></td><td>${esc(d.status)}</td><td>${d.completed}</td><td>${money(d.earnings.commission)}</td></tr>`).join('')}</table></div></div>
+    <div><p class="h3">Recent deliveries</p><div class="tbl-wrap"><table class="tbl"><tr><th>#</th><th>Route</th><th>Price</th><th>Status</th></tr>
+      ${data.jobs.slice(0, 15).map((j) => `<tr><td>${j.id}</td><td>${esc(j.pickup.area)} to ${esc(j.drop.area)}</td><td>${money(j.agreedPrice || j.openingPrice)}</td><td>${STATUS[j.status]}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No deliveries yet.</td></tr>'}</table></div></div></div>
+    <p class="h3">Commission ledger</p><div class="tbl-wrap"><table class="tbl"><tr><th>Date</th><th>Courier</th><th>Amount</th></tr>
+      ${data.ledger.map((l) => `<tr><td>${dayLabel(l.date)}</td><td>${esc(data.drivers.find((d) => d.id === l.driverId)?.name || l.driverId)}</td><td>${money(l.amount)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing collected yet.</td></tr>'}</table></div></div>`;
+}
+
+// ---------- Rendering ----------
+const TABS = {
+  sender: [['home', 'Home', 'home'], ['jobs', 'Deliveries', 'list'], ['profile', 'Profile', 'user']],
+  driver: [['home', 'Home', 'home'], ['earnings', 'Earnings', 'wallet'], ['bookings', 'Bookings', 'list'], ['profile', 'Profile', 'user']],
+};
+
+function currentView() {
+  if (!me.role) return { html: vWelcome(), bare: true, tabs: false };
+  if (me.role === 'admin') return { html: vAdmin(), tabs: false, wide: true };
+  const n = nav.cur.name;
+  if (me.role === 'sender') {
+    if (!me.name) return { html: vSenderSetup(), tabs: false };
+    if (n === 'new') return { html: vSNew(), tabs: false };
+    const f = { home: vSHome, jobs: vSJobs, job: vSJob, profile: vProfile }[n] || vSHome;
+    return { html: f(), tabs: true };
+  }
+  if (!me.driverId) return { html: vDriverPick(), tabs: false };
+  if (!data) return { html: '<p class="empty">Loading...</p>', tabs: true };
+  const f = { home: vDHome, job: vDJob, earnings: vDEarn, bookings: vDBook, profile: vProfile }[n] || vDHome;
+  return { html: f(), tabs: true };
+}
+
+function render(reset) {
+  if (!meta) return;
+  const a = document.activeElement;
+  const bind = a && a.dataset && a.dataset.bind;
+  const pos = bind && a.selectionStart;
+  const scr = $('#screen'), top = scr.scrollTop;
+  const v = currentView();
+  scr.innerHTML = v.html;
+  scr.classList.toggle('bare', !!v.bare);
+  $('#phone').classList.toggle('wide', !!v.wide);
+  const tabs = $('#tabs');
+  tabs.hidden = !v.tabs;
+  if (v.tabs) {
+    const cur = nav.cur.name === 'job' ? (me.role === 'sender' ? 'jobs' : 'home') : nav.cur.name;
+    tabs.innerHTML = TABS[me.role].map(([id, label, icon]) => `<button data-act="tab" data-tab="${id}" ${cur === id ? 'aria-current="page"' : ''}>${ic(icon)}${label}</button>`).join('');
+  }
+  if (reset) scr.scrollTop = 0; else scr.scrollTop = top;
+  if (bind && !reset) {
+    const el = scr.querySelector(`[data-bind="${CSS.escape(bind)}"]`);
+    if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { /* not a text input */ } }
+  }
+}
+
+// ---------- Data loading ----------
+async function pull() {
+  try {
+    let next = null;
+    if (me.role === 'sender' && me.senderId) next = await call(`sender/${me.senderId}/jobs`);
+    else if (me.role === 'driver' && me.driverId) next = await call(`driver/${me.driverId}`);
+    else if (me.role === 'admin' && (!meta.adminPinRequired || ui.pin)) next = await call('admin', undefined, { 'x-admin-pin': ui.pin });
+    $('#offline').hidden = true;
+    const s = JSON.stringify(next);
+    if (s !== dsig) { data = next; dsig = s; render(); }
+  } catch (e) {
+    if (e.status === 401) { ui.pin = ''; ui.pinBad = true; data = null; dsig = ''; render(); return; }
+    if (e.status === 404 && me.role === 'driver') { me.driverId = ''; persistMe(); render(true); return; }
+    if (!navigator.onLine || e instanceof TypeError) $('#offline').hidden = false;
+  }
+}
+const refresh = async () => { dsig = ''; await pull(); };
+async function run(fn, okMsg) {
+  try { await fn(); if (okMsg) toast(okMsg); await refresh(); } catch (e) { toast(e.message, true); await refresh(); }
 }
 
 // ---------- Actions ----------
-async function afterAuth(r) {
-  A.token = r.token; A.user = r.user; store.set('token', r.token);
-  A.ui = {};
-  A.route = { name: 'home' };
-  await refreshFeed(true);
-}
-const U = (k) => String(A.ui[k] ?? '').trim();
-const actions = {
-  go: (b) => { if (b.dataset.to === 'new') return actions.new(); go(b.dataset.to, b.dataset.id ? { id: b.dataset.id } : {}); },
-  new: () => { resetWizard(); go('new'); },
-  role: (b) => { A.ui['reg.role'] = b.dataset.v; go('register', { step: 2 }); },
-  pick: (b) => { A.ui[b.dataset.k] = b.dataset.v; render(true); },
-  signout: () => run(async () => { try { await api('auth/logout', {}); } catch { /* already signed out */ } signOut(); }),
-  'wiz-back': () => { A.ui['w.step'] -= 1; render(true); },
-  'wiz-next': () => run(async () => {
-    const step = A.ui['w.step'];
-    if (step === 1) {
-      if (A.ui['w.pickupId'] === A.ui['w.dropoffId']) throw new Error('Pickup and drop-off must be different areas.');
-      if (!U('w.pickupAddress') || !U('w.dropoffAddress')) throw new Error('Enter the street address for pickup and drop-off.');
+const sBody = (extra) => ({ senderId: me.senderId, ...extra });
+const dBody = (extra) => ({ driverId: me.driverId, ...extra });
+
+const ACT = {
+  role: ({ role }) => {
+    if (role === 'admin') { me.role = 'admin'; data = null; dsig = ''; ui.pin = ''; ui.pinBad = false; render(true); return; }
+    me.role = role; if (role === 'sender' && !me.senderId) me.senderId = genId();
+    persistMe(); data = null; dsig = ''; nav = { stack: [], cur: { name: 'home' } };
+    if (role === 'driver' && !me.driverId) loadDrivers();
+    render(true); pull();
+  },
+  leave: () => { me.role = ''; if (store.get('role') !== '') store.set('role', ''); data = null; dsig = ''; render(true); },
+  tab: ({ tab: t }) => tab(t),
+  back: () => back(),
+  'open-job': ({ id }) => go('job', { id }),
+  'start-new': ({ type }) => { ui.draft = defaultDraft(type); ui.step = 1; ui.error = ''; go('new'); },
+  veh: ({ v }) => { ui.draft.vehicle = v; render(); },
+  'reg-veh': ({ v }) => { ui.reg.vehicle = v; render(); },
+  'toggle-reg': () => { ui.showReg = !ui.showReg; render(); },
+  'new-back': () => { ui.error = ''; if (ui.step > 1) { ui.step -= 1; render(true); } else back(); },
+  'new-next': async () => {
+    const d = ui.draft; ui.error = '';
+    if (ui.step === 1) {
+      if (!d.pickupAddress.trim() || !d.dropAddress.trim()) ui.error = 'Enter both the pickup and delivery address.';
+      else if (d.type === 'scheduled' && !(new Date(d.scheduledAt) > new Date())) ui.error = 'Choose a pickup time in the future.';
+    } else if (ui.step === 2) {
+      if (!d.itemType) ui.error = 'Choose what you are sending.';
+      else if (!d.recipientName.trim()) ui.error = 'Enter the recipient name.';
+      else if (!/^[+\d][\d\s-]{6,18}$/.test(d.recipientPhone.trim())) ui.error = 'Enter a valid recipient phone number.';
     }
-    if (step === 2) {
-      if (!U('w.recipientName')) throw new Error('Enter the recipient name.');
-      if (!/^\+?\d{7,15}$/.test(U('w.recipientPhone').replace(/[\s-]/g, ''))) throw new Error('Enter a valid recipient phone number.');
-      const q = Number(A.ui['w.quantity']);
-      if (!Number.isInteger(q) || q < 1 || q > 99) throw new Error('Quantity must be between 1 and 99.');
-      A.ui['w.est'] = await api('estimate', { pickupId: A.ui['w.pickupId'], dropoffId: A.ui['w.dropoffId'], vehicle: A.ui['w.vehicle'] });
-      if (!A.ui['w.price']) A.ui['w.price'] = A.ui['w.est'].suggested;
+    if (!ui.error && ui.step === 2) {
+      try {
+        ui.est = await call('estimate', { pickupAreaId: d.pickupAreaId, dropAreaId: d.dropAreaId, vehicle: d.vehicle });
+        if (!d.priceTouched || !d.price) d.price = ui.est.fare;
+      } catch (e) { ui.error = e.message; }
     }
-    A.ui['w.step'] = step + 1;
-    render(true);
-  }),
-  'price-adj': (b) => { A.ui['w.price'] = Math.max(A.cfg.settings.minPrice, digits(A.ui['w.price']) + Number(b.dataset.d)); render(true); },
-  'wiz-post': () => run(async () => {
-    const u = A.ui;
-    const d = await api('deliveries', {
-      pickupId: u['w.pickupId'], dropoffId: u['w.dropoffId'], pickupAddress: U('w.pickupAddress'), dropoffAddress: U('w.dropoffAddress'),
-      vehicle: u['w.vehicle'], item: u['w.item'], quantity: Number(u['w.quantity']), payer: u['w.payer'], payMethod: u['w.payMethod'],
-      recipientName: U('w.recipientName'), recipientPhone: U('w.recipientPhone'), note: U('w.note'), askPrice: digits(u['w.price']),
-    });
-    toast('Request posted. Riders can see it now.');
-    await refreshFeed();
-    go('delivery', { id: d.id });
-  }),
-  'counter-toggle': (b) => {
-    const k = 'c.open.' + b.dataset.key;
-    A.ui[k] = !A.ui[k];
-    if (A.ui[k]) A.ui['c.' + b.dataset.key] = b.dataset.price;
+    if (!ui.error) ui.step += 1;
     render(true);
   },
-  'counter-send': (b) => run(async () => {
-    const price = digits(A.ui['c.' + b.dataset.key]);
-    const r = await api(`deliveries/${b.dataset.id}/offer`, { price, courierId: b.dataset.courier });
-    A.ui['c.open.' + b.dataset.key] = false;
-    toast(r.status === 'sealed' ? 'Deal sealed.' : 'Offer sent.');
-    await refreshFeed(true);
+  'post-job': () => run(async () => {
+    const d = ui.draft;
+    const job = await call('jobs', {
+      senderId: me.senderId, senderName: me.name, senderPhone: me.phone, deliveryType: d.type,
+      scheduledAt: d.type === 'scheduled' && d.scheduledAt ? new Date(d.scheduledAt).toISOString() : undefined,
+      pickupAreaId: d.pickupAreaId, pickupAddress: d.pickupAddress, dropAreaId: d.dropAreaId, dropAddress: d.dropAddress,
+      vehicle: d.vehicle, itemType: d.itemType, quantity: d.quantity, note: d.note, recipientName: d.recipientName,
+      recipientPhone: d.recipientPhone, payer: d.payer, payment: d.payment, openingPrice: d.price,
+    });
+    ui.draft = null; nav = { stack: [{ name: 'jobs' }], cur: { name: 'job', id: job.id } };
+    toast('Request posted. Couriers can now make offers.');
   }),
-  accept: (b) => run(async () => { await api(`deliveries/${b.dataset.id}/accept`, { courierId: b.dataset.courier }); toast('Deal sealed.'); await refreshFeed(true); }),
-  leave: (b) => run(async () => { await api(`deliveries/${b.dataset.id}/leave`, { courierId: b.dataset.courier }); await refreshFeed(true); }),
-  cancel: (b) => { if (confirm('Cancel this delivery?')) run(async () => { await api(`deliveries/${b.dataset.id}/cancel`, {}); await refreshFeed(true); }); },
-  rate: (b) => run(async () => { await api(`deliveries/${b.dataset.id}/rate`, { rating: Number(b.dataset.n) }); toast('Thanks for rating.'); await refreshFeed(true); }),
-  skip: (b) => { A.skipped.add(Number(b.dataset.id)); store.set('skipped', JSON.stringify([...A.skipped].slice(-200))); render(true); },
-  online: (b) => run(async () => { A.user = await api('me/courier', { online: b.dataset.v === '1' }); await refreshFeed(true); }),
-  advance: (b) => run(async () => { const r = await api(`deliveries/${b.dataset.id}/advance`, {}); toast(r.status === 'delivered' ? 'Delivered. Well done.' : 'Marked as picked up.'); await refreshFeed(true); }),
-  settle: (b) => run(async () => { await api(`admin/couriers/${b.dataset.id}/settle`, {}); toast('Marked as paid.'); await refreshFeed(true); }),
-};
-const forms = {
-  login: () => run(async () => afterAuth(await api('auth/login', { phone: U('li.phone'), pin: A.ui['li.pin'] }))),
-  register: () => run(async () => afterAuth(await api('auth/register', {
-    role: A.ui['reg.role'], name: U('reg.name'), phone: U('reg.phone'), pin: A.ui['reg.pin'], vehicle: A.ui['reg.vehicle'] || 'bike', plate: U('reg.plate'),
-  }))),
-  settings: () => run(async () => {
-    A.cfg.settings = { ...A.cfg.settings, ...(await api('admin/settings', { commissionPerDay: digits(A.ui['s.commission'] ?? A.feed.settings.commissionPerDay), minPrice: digits(A.ui['s.min'] ?? A.feed.settings.minPrice) })) };
-    toast('Settings saved.');
-    await refreshFeed(true);
-  }),
+  step: ({ path, d }, el) => {
+    // Start from the number the person actually sees in the field (it may be an unsaved default).
+    const shown = Number(String(el.parentElement.querySelector('input').value).replace(/\D/g, ''));
+    const cur = shown || Number(getPath(path)) || 0;
+    setPath(path, Math.max(100, cur + Number(d)));
+    if (path === 'draft.price') ui.draft.priceTouched = true;
+    render();
+  },
+  'toggle-counter': ({ key, price }) => { ui.open[key] = !ui.open[key]; if (ui.counter[key] == null) ui.counter[key] = Number(price); render(); },
+  's-accept': ({ id, driver }) => run(() => call(`jobs/${id}/sender/accept`, sBody({ driverId: driver }))),
+  's-decline': ({ id, driver }) => run(() => call(`jobs/${id}/sender/decline`, sBody({ driverId: driver }))),
+  's-counter': ({ id, driver, key }) => run(async () => { await call(`jobs/${id}/sender/counter`, sBody({ driverId: driver, price: ui.counter[key] })); ui.open[key] = false; delete ui.counter[key]; }, 'Counter-offer sent.'),
+  's-cancel': ({ id }) => { if (confirm('Cancel this delivery?')) run(() => call(`jobs/${id}/cancel`, sBody({})), 'Delivery cancelled.'); },
+  rate: ({ id, n }) => run(() => call(`jobs/${id}/rate`, sBody({ rating: Number(n) })), 'Thanks for rating.'),
+  'toggle-online': (_, el) => run(() => call(`drivers/${me.driverId}/status`, { status: el.checked ? 'online' : 'offline' })),
+  'd-accept': ({ id }) => run(() => call(`jobs/${id}/driver/accept`, dBody({})), 'Deal sealed.'),
+  'd-reject': ({ id }) => run(async () => { await call(`jobs/${id}/driver/reject`, dBody({})); if (nav.cur.name === 'job') back(); }),
+  'd-counter': ({ id, key }) => run(async () => { await call(`jobs/${id}/driver/counter`, dBody({ price: ui.counter[key] })); delete ui.counter[key]; }, 'Counter-offer sent.'),
+  'd-pickup': ({ id }) => run(() => call(`jobs/${id}/driver/pickup`, dBody({})), 'Marked as picked up.'),
+  'd-deliver': ({ id }) => run(() => call(`jobs/${id}/driver/deliver`, dBody({})), 'Delivery complete.'),
+  'd-withdraw': ({ id }) => { if (confirm('Pull out? The delivery goes back to other couriers.')) run(async () => { await call(`jobs/${id}/driver/withdraw`, dBody({})); back(); }); },
+  'pick-driver': ({ id }) => { me.driverId = id; persistMe(); nav = { stack: [], cur: { name: 'home' } }; data = null; dsig = ''; render(true); pull(); },
+  install: async () => { if (!installEvent) return; installEvent.prompt(); await installEvent.userChoice; installEvent = null; render(); },
 };
 
+async function loadDrivers() { try { ui.drivers = (await call('drivers')).drivers; render(); } catch { /* retried on next visit */ } }
+
 document.addEventListener('click', (e) => {
-  const b = e.target.closest('[data-do]');
-  if (!b || b.disabled) return;
-  e.preventDefault();
-  const fn = actions[b.dataset.do];
-  if (fn) fn(b);
+  const el = e.target.closest('[data-act]');
+  if (!el || el.tagName === 'INPUT') return;
+  const f = ACT[el.dataset.act];
+  if (f) f(el.dataset, el, e);
 });
-document.addEventListener('input', (e) => { const k = e.target.dataset && e.target.dataset.k; if (k) A.ui[k] = e.target.value; });
-document.addEventListener('change', (e) => {
-  const k = e.target.dataset && e.target.dataset.k;
-  if (!k) return;
-  A.ui[k] = e.target.value;
-  if (k === 'w.pickupId' || k === 'w.dropoffId') render(true); // redraw the map
+document.addEventListener('change', (e) => { if (e.target.dataset?.act === 'toggle-online') ACT['toggle-online'](e.target.dataset, e.target); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('[role="link"][data-act]')) { e.preventDefault(); e.target.click(); }
+});
+document.addEventListener('input', (e) => {
+  const t = e.target, path = t.dataset?.bind;
+  if (!path) return;
+  if (t.type === 'radio' && !t.checked) return;
+  setPath(path, t.dataset.num ? Number(String(t.value).replace(/\D/g, '')) : t.value);
+  if (path === 'draft.price') ui.draft.priceTouched = true;
 });
 document.addEventListener('submit', (e) => {
-  const f = e.target.dataset && e.target.dataset.form;
+  const f = e.target.dataset?.form;
   if (!f) return;
   e.preventDefault();
-  forms[f]();
+  if (f === 'setup') {
+    me.name = (ui.prof.name ?? me.name).trim(); me.phone = (ui.prof.phone ?? me.phone).trim();
+    if (!me.name) return toast('Enter your name.', true);
+    persistMe(); render(true);
+  } else if (f === 'register') {
+    const r = ui.reg;
+    run(async () => {
+      const d = await call('drivers', { name: r.name, phone: r.phone, vehicle: r.vehicle || 'bike', plate: r.plate });
+      ui.reg = {}; ui.showReg = false; me.driverId = d.id; persistMe(); nav = { stack: [], cur: { name: 'home' } };
+      toast('Registered. Switch on Online to see requests.');
+    });
+  } else if (f === 'admin-login') {
+    ui.pin = ui.pinf?.pin || ''; ui.pinBad = false; refresh();
+  } else if (f === 'admin-save') {
+    run(async () => { await call('admin/settings', { commissionPerDay: ui.adm?.commission ?? data.settings.commissionPerDay }, { 'x-admin-pin': ui.pin }); ui.adm = {}; }, 'Commission updated.');
+  }
 });
-document.addEventListener('click', (e) => {
-  const svg = e.target.closest('#map');
-  if (!svg || !A.user || A.user.role !== 'courier' || A.route.name !== 'home') return;
-  const job = A.feed && A.feed.mine.find((d) => ['sealed', 'picked_up'].includes(d.status));
-  if (!job) return;
-  const pt = svg.createSVGPoint();
-  pt.x = e.clientX; pt.y = e.clientY;
-  const p = pt.matrixTransform(svg.getScreenCTM().inverse());
-  const c = (v) => Math.min(100, Math.max(0, v));
-  run(async () => { A.user = await api('me/courier', { x: c(p.x), y: c(p.y) }); await refreshFeed(true); });
-});
+
+// ---------- PWA ----------
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; render(); });
+window.addEventListener('appinstalled', () => { installEvent = null; toast('Bargo installed.'); render(); });
+window.addEventListener('online', () => { $('#offline').hidden = true; pull(); });
+window.addEventListener('offline', () => { $('#offline').hidden = false; });
+if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 
 // ---------- Start ----------
 (async function init() {
   try {
-    A.cfg = await api('config');
-    if (A.token) {
-      try { A.user = await api('me'); A.route = { name: 'home' }; await refreshFeed(true); } catch { signOut(); }
-    }
-    render(true);
-    setInterval(() => { if (A.user && !document.hidden) refreshFeed().catch(() => {}); }, 3000);
-  } catch (e) {
-    $('#screen').innerHTML = `<p class="empty">Cannot reach the server. ${esc(e.message)}</p>`;
+    meta = await call('meta');
+  } catch {
+    $('#screen').innerHTML = '<p class="empty">Cannot reach the server. Check your connection and reload.</p>';
+    return;
   }
+  const want = new URLSearchParams(location.search).get('role');
+  if (!me.role && (want === 'sender' || want === 'driver')) ACT.role({ role: want });
+  if (me.role === 'admin') me.role = '';
+  if (me.role === 'driver' && !me.driverId) loadDrivers();
+  render(true);
+  pull();
+  setInterval(() => { if (!document.hidden) pull(); }, 3000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(); });
 })();

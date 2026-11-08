@@ -1,10 +1,10 @@
-# RideDispatch
+# Bargo
 
-A dispatch marketplace where the price is negotiated. A customer posts a delivery with the price they want to pay. Dispatch riders can accept it or counter. They go back and forth until one side accepts the other's latest price, and that seals the deal.
+Book a courier, agree the price, get it delivered.
 
-The platform earns a flat **₦500 per rider per active day**, however many deliveries the rider completes. The amount is a setting, so it can change later.
+A sender posts a delivery with their own opening price. Couriers can accept it or send a counter-offer, and the two sides go back and forth until one accepts the other's price. That moment seals the deal. The platform earns a flat daily commission from each courier.
 
-No dependencies. Needs Node.js 18 or newer.
+It is a Progressive Web App: it installs on phones and desktops and opens offline. There are no dependencies. It needs Node.js 18 or newer.
 
 ## Run it
 
@@ -13,69 +13,54 @@ npm start
 # open http://localhost:3000
 ```
 
-On first start an admin account is created and its PIN is printed once in the terminal. To choose your own, set `ADMIN_PHONE` and `ADMIN_PIN` before starting. Set `PORT` to change the port. Data is saved to `data.json` (ignored by git).
+| Setting | What it does | Default |
+| --- | --- | --- |
+| `PORT` | Port to listen on | `3000` |
+| `ADMIN_PIN` | PIN required to open the admin screen. Leave empty to leave admin open (fine for local testing only) | none |
+| `COMMISSION_PER_DAY` | Starting daily commission in naira. Afterwards change it in the admin screen | `500` |
+| `DATA_FILE` | Where data is saved | `data.json` |
 
-To try it with sample accounts, start with `SEED_DEMO=1 npm start`. That adds a customer (`08000000001`) and three riders (`08000000011` to `08000000013`), all with PIN `1234`. Never use this in production.
+## The three roles
 
-Open the customer and the rider in two browser windows (use a private window for the second so sign-ins do not clash) and run a delivery from request to rating.
+- **Sender**: choose pickup, delivery, vehicle and item, set an opening price (a suggestion is shown), then negotiate with couriers. Accept, counter or decline each offer. Instant or scheduled.
+- **Courier**: go online, see requests for your vehicle type, then accept, counter or reject. After a deal: picked up, then delivered. Earnings are shown by day.
+- **Admin**: totals, every courier's earnings, the commission ledger, and the daily commission setting. Open it from the small "Admin" link on the welcome screen.
 
-## How it works
+Try it with two browser windows: book as a sender in one, and choose a courier profile (for example Emeka Obi, who rides a bike) in the other.
 
-1. **Customer** signs up, picks pickup and drop-off areas with street addresses, the vehicle type (motorbike, car or van), what is being sent, who pays, and the recipient. They set an opening price. A suggested range is shown as a guide.
-2. **Riders** with a matching vehicle who are online see the request. They can accept the asking price, counter, or skip it. They never see the recipient's name or phone number at this stage.
-3. **Negotiation** happens in a thread per rider. Either side can counter as often as they like (up to 20 messages per thread). You can only accept the other side's latest price. If a counter matches the other side's last price, the deal seals on the spot.
-4. **Sealed**: the customer and the chosen rider see each other's contact details, the other riders' threads close, and the rider's other open negotiations close too. A rider runs one delivery at a time.
-5. The rider marks **picked up** and **delivered**. The customer rates the rider.
+## How a deal works
 
-Payment between customer and rider (cash or transfer) happens outside the app. RideDispatch does not handle the money.
+1. The sender posts a delivery with an opening price.
+2. Each courier can accept that price (deal sealed), counter, or reject. Each courier has their own conversation with the sender.
+3. Offers go back and forth, one side at a time. Whoever accepts the other's latest price seals the deal at that price.
+4. Once sealed, other offers close and the courier and sender see each other's phone numbers. The recipient's contact is hidden from couriers until then.
+5. The courier marks picked up, then delivered. The sender can rate the courier.
+6. A sender can cancel until pickup. A courier can pull out before pickup, which reopens the delivery.
+
+Payment of the agreed price happens between sender and courier, in cash or by bank transfer. The app does not handle money.
 
 ## Commission
 
-- Flat ₦500 per rider per active day, charged when the rider completes their **first delivery of the day** (Africa/Lagos time). The second, third and later deliveries that day cost nothing extra.
-- A rider who completes nothing in a day pays nothing.
-- Charges go into a ledger as **owed**. The admin marks a rider's balance **paid** once collected.
-- The admin can change the amount under Settings. Existing ledger entries keep the amount they were charged at.
+A flat **₦500 per courier per working day**, charged when the courier completes their first delivery of the day (Lagos time), however many deliveries they do after that. A cancelled delivery costs the courier nothing.
 
-## Roles
+Change the amount in the admin screen. The new amount applies to later days. Past charges are kept exactly as they were.
 
-| Role | What they can do |
-| --- | --- |
-| Customer | Request deliveries, negotiate, accept or decline offers, cancel before pickup, rate riders |
-| Rider | Go online or offline, send offers, accept, run the delivery, see earnings after commission |
-| Admin | See all deliveries, riders and the commission ledger, mark commission paid, change commission and minimum price |
+## Install it as an app (PWA)
 
-Accounts use a phone number and a 4 to 6 digit PIN (stored hashed with scrypt). Sessions are random tokens valid for 30 days. Five wrong PIN attempts lock that phone number for 5 minutes.
+Installing needs HTTPS (or `localhost`). A plain `http://` address on your local network will not offer the install option on phones.
 
-## Fares and the map
+1. Deploy it (see below) so you get an `https://` address.
+2. **Android / Chrome**: open the address, then use the "Install app" button on the welcome screen, or Chrome's menu, Install app.
+3. **iPhone / Safari**: open the address, tap Share, then Add to Home Screen.
+4. **Desktop Chrome or Edge**: click the install icon at the right of the address bar.
 
-The suggested price is `(₦500 + ₦150 per km + ₦20 per minute)`, times 1 for a motorbike, 1.6 for a car and 2.4 for a van, rounded to the nearest ₦50. The range shown is 0.8 to 1.4 times that. Edit the `FARE` and `VEHICLES` values at the top of `server.js`.
+The app shell is cached, so it opens without a connection. Prices and deals always need to be online.
 
-The map is a simulated city of 10 areas on a 100 by 100 grid, so the app works offline. Customers choose an area plus a free-text street address. Real maps, geocoding and live GPS are the natural next step.
+## Deploy
 
-## API
+On [Render](https://render.com): New, then Blueprint, pick this repo. `render.yaml` sets it up and asks for an `ADMIN_PIN`. Any host that runs Node works too: run `node server.js` and set `PORT`.
 
-All endpoints are under `/api`. Send `Authorization: Bearer <token>` for signed-in routes.
-
-| Method | Path | Who | Purpose |
-| --- | --- | --- | --- |
-| POST | `/auth/register` | anyone | Create a customer or rider account |
-| POST | `/auth/login` | anyone | Sign in |
-| POST | `/auth/logout` | signed in | End the session |
-| GET | `/me` | signed in | Current user |
-| GET | `/config` | anyone | Areas, vehicles, items, commission and price limits |
-| POST | `/estimate` | anyone | Suggested price and range |
-| GET | `/feed` | signed in | Role-specific data: own deliveries, available requests, or the admin overview |
-| POST | `/deliveries` | customer | Post a delivery request |
-| POST | `/deliveries/:id/offer` | customer, rider | Send or counter a price |
-| POST | `/deliveries/:id/accept` | customer, rider | Accept the other side's latest price |
-| POST | `/deliveries/:id/leave` | customer, rider | Decline a rider, or walk away |
-| POST | `/deliveries/:id/cancel` | customer | Cancel before pickup |
-| POST | `/deliveries/:id/advance` | rider | Picked up, then delivered |
-| POST | `/deliveries/:id/rate` | customer | Rate the rider from 1 to 5 |
-| POST | `/me/courier` | rider | Go online or offline, update position |
-| POST | `/admin/settings` | admin | Commission per day and minimum price |
-| POST | `/admin/ledger/:id/paid` | admin | Mark one commission entry paid |
-| POST | `/admin/couriers/:id/settle` | admin | Mark all of a rider's commission paid |
+The free Render plan has no persistent disk, so data resets when the service restarts. For real use, attach a disk and set `DATA_FILE=/var/data/data.json`, or move storage to a database.
 
 ## Test
 
@@ -83,14 +68,23 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for signed-
 npm test
 ```
 
-14 API tests cover sign-in and throttling, role checks, input validation, privacy of recipient details, the full negotiation flow, one-job-at-a-time, cancel rules, ratings, and the once-per-day commission.
-
 ## Before real use
 
-This is a working prototype. Before putting it in front of the public:
+This is a working prototype. Senders and couriers have no sign-in: anyone who opens the app can pick a courier profile. Add real accounts (phone verification), a database and identity checks for couriers before putting it in front of the public.
 
-- Serve it over HTTPS (PINs and tokens travel in requests).
-- Replace the JSON file with a database, and add backups.
-- Verify phone numbers with an SMS code, and add rider identity checks.
-- Add real maps and live location, and push notifications (the app currently refreshes every 3 seconds).
-- Decide how commission is collected from riders (for example a payment link) instead of marking it paid by hand.
+## API
+
+All JSON under `/api`. Main routes:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/meta` | Areas, vehicles, item types, current commission |
+| POST | `/estimate` | Suggested price for a trip |
+| POST | `/jobs` | Post a delivery |
+| GET | `/sender/:id/jobs` | A sender's deliveries with offers |
+| POST | `/jobs/:id/sender/{counter,accept,decline}` | Sender replies to a courier's offer |
+| POST | `/jobs/:id/driver/{accept,counter,reject,pickup,deliver,withdraw}` | Courier actions |
+| POST | `/jobs/:id/{cancel,rate}` | Cancel, or rate after delivery |
+| GET | `/driver/:id` | Courier feed: requests, offers, current job, earnings |
+| GET, POST | `/drivers`, `/drivers/:id/status` | List, register, go online or offline |
+| GET, POST | `/admin`, `/admin/settings` | Admin overview and commission (header `x-admin-pin`) |

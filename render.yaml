@@ -1,0 +1,17 @@
+# One-click deploy on Render (https://render.com): New > Blueprint > pick this repo.
+# HTTPS comes with it, which is what lets phones and desktops install the app.
+services:
+  - type: web
+    name: bargo
+    runtime: node
+    plan: free
+    buildCommand: echo "nothing to build"
+    startCommand: node server.js
+    healthCheckPath: /api/meta
+    envVars:
+      - key: ADMIN_PIN
+        sync: false # you will be asked for a PIN when you deploy
+      - key: COMMISSION_PER_DAY
+        value: "500"
+      # The free plan has no persistent disk, so data resets when the service restarts.
+      # For real use, attach a disk and set DATA_FILE=/var/data/data.json, or move to a database.

@@ -3,17 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#00606b">
-  <title>RideDispatch</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css">
+  <title>Bargo: deliveries at a price you agree</title>
+  <meta name="description" content="Book a courier, agree the price, get it delivered.">
+  <meta name="theme-color" content="#006a6e">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Bargo">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="phone">
-    <main class="screen" id="screen" aria-live="polite"></main>
-    <nav class="tabs" id="tabs" aria-label="Main" hidden></nav>
+  <div class="stage">
+    <div class="phone" id="phone">
+      <div class="offline" id="offline" hidden>You are offline. Reconnecting...</div>
+      <main id="screen" tabindex="-1"></main>
+      <nav id="tabs" class="tabs" aria-label="Main" hidden></nav>
+    </div>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="app.js"></script>
+  <noscript>Bargo needs JavaScript to run.</noscript>
+  <script src="/app.js"></script>
 </body>
 </html>
