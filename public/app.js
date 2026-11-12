@@ -42,7 +42,7 @@ async function call(path, body, headers = {}) {
     });
   } catch { throw Object.assign(new Error('No connection. Check your internet and try again.'), { status: 0 }); }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(json.error || 'Something went wrong. Try again.'), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(json.error || `Something went wrong (server answered ${res.status}). Try again.`), { status: res.status });
   return json;
 }
 let toastTimer;

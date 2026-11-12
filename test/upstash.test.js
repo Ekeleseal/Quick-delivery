@@ -120,6 +120,6 @@ test('a wrong storage token gives a clean error, not a crash', async () => {
   const c = client(`http://localhost:${server.address().port}`);
   const r = await c.call('auth/register', { role: 'sender', name: 'Nope Nope', phone: phone(), password: 'password123' });
   assert.equal(r.status, 500);
-  assert.match(r.json.error, /Something went wrong/);
+  assert.match(r.json.error, /Server error/);
   server.close();
 });
