@@ -6,7 +6,7 @@ services:
     runtime: node
     plan: free
     buildCommand: echo "nothing to build"
-    startCommand: node server.js
+    startCommand: node local.js
     healthCheckPath: /api/meta
     envVars:
       - key: ADMIN_PIN

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Bargo: deliveries at a price you agree</title>
-  <meta name="description" content="Book a courier, agree the price, get it delivered.">
+  <meta name="description" content="Book a courier in Port Harcourt, agree the price, get it delivered.">
   <meta name="theme-color" content="#006a6e">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
@@ -24,10 +24,12 @@
       <div class="offline" id="offline" hidden>You are offline. Reconnecting...</div>
       <main id="screen" tabindex="-1"></main>
       <nav id="tabs" class="tabs" aria-label="Main" hidden></nav>
+      <div id="sheet" class="sheet" role="dialog" aria-modal="true" aria-label="Choose a place" hidden></div>
     </div>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
   <noscript>Bargo needs JavaScript to run.</noscript>
+  <script src="/tilemap.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -1,9 +1,10 @@
 'use strict';
-// Bargo front end: one small app, three roles (sender, courier, admin).
+// Bargo front end: accounts, deliveries, price negotiation, Port Harcourt maps.
 const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => '₦' + Math.round(Number(n) || 0).toLocaleString('en-NG');
-const store = {
+const ls = {
   get(k, d = '') { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
 };
@@ -24,16 +25,22 @@ const ICON = {
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   box: '<path d="M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v9"/>',
   phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
+  locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
+  chevron: '<path d="M9 6l6 6-6 6"/>',
+  logout: '<path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M16 8l4 4-4 4M20 12H9"/>',
 };
 const ic = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
 
 // ---------- API ----------
 async function call(path, body, headers = {}) {
-  const res = await fetch('/api/' + path, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch('/api/' + path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch { throw Object.assign(new Error('No connection. Check your internet and try again.'), { status: 0 }); }
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(json.error || 'Something went wrong. Try again.'), { status: res.status });
   return json;
@@ -44,26 +51,22 @@ function toast(msg, isErr) {
   t.textContent = msg;
   t.className = 'show' + (isErr ? ' err' : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = ''; }, 3800);
+  toastTimer = setTimeout(() => { t.className = ''; }, 4200);
 }
 
 // ---------- State ----------
-let meta = null;
-let data = null;
+let meta = null;   // public settings from the server
+let me = null;     // the signed-in account, or null
+let data = null;   // the signed-in account's live data (deliveries, feed or admin overview)
 let dsig = '';
-const me = {
-  role: store.get('role'), senderId: store.get('senderId'), name: store.get('name'),
-  phone: store.get('phone'), driverId: store.get('driverId'),
-};
 let nav = { stack: [], cur: { name: 'home' } };
-const ui = { step: 1, draft: null, est: null, counter: {}, open: {}, seen: new Set(), reg: {}, prof: {}, pin: '', pinBad: false, drivers: null, showReg: false, error: '' };
 let installEvent = null;
+const ui = { auth: null, admin: null, step: 1, draft: null, est: null, route: null, counter: {}, open: {}, seen: new Set(), pw: {}, sh: null, error: '', tempPw: null, adm: {} };
 
 const OPEN = ['open', 'agreed', 'picked_up'];
 const STATUS = { open: 'Open', agreed: 'Deal sealed', picked_up: 'On the way', delivered: 'Delivered', cancelled: 'Cancelled' };
 const STEP_LABEL = { agreed: 'Deal sealed', picked_up: 'Picked up', delivered: 'Delivered' };
 
-function persistMe() { for (const k of ['role', 'senderId', 'name', 'phone', 'driverId']) store.set(k, me[k] || ''); }
 const go = (name, params = {}) => { nav.stack.push(nav.cur); nav.cur = { name, ...params }; render(true); };
 const back = () => { nav.cur = nav.stack.pop() || { name: 'home' }; render(true); };
 const tab = (name) => { nav = { stack: [], cur: { name } }; render(true); };
@@ -79,18 +82,17 @@ const driverJob = (id) => {
   for (const k of ['current', 'offers', 'available', 'history']) { const j = (data[k] || []).find((x) => String(x.id) === String(id)); if (j) return j; }
   return null;
 };
-const route = (j) => `${esc(j.pickup.area)} ${ic('arrow')} ${esc(j.drop.area)}`;
+const findJob = (id) => (me?.role === 'sender' ? senderJob(id) : driverJob(id));
+const route = (j) => `${esc(j.pickup.label)} ${ic('arrow')} ${esc(j.drop.label)}`;
 const chip = (j) => `<span class="chip ${j.status}">${STATUS[j.status]}</span>`;
 const empty = (icon, msg) => `<div class="empty">${ic(icon)}<p>${msg}</p></div>`;
-const genId = () => 's_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 const getPath = (p) => { const i = p.indexOf('.'); return ui[p.slice(0, i)]?.[p.slice(i + 1)]; };
 function setPath(p, v) { const i = p.indexOf('.'); const root = p.slice(0, i); ui[root] ||= {}; ui[root][p.slice(i + 1)] = v; }
+const inService = (lat, lng) => { const b = meta.bounds; return lat >= b.south && lat <= b.north && lng >= b.west && lng <= b.east; };
+const storageWarning = () => (meta?.ephemeral ? '<p class="warn" role="alert">This server is not saving data permanently yet, so accounts and deliveries will disappear. The owner needs to connect a database (see the README).</p>' : '');
 
 function defaultDraft(type) {
-  return {
-    type, pickupAreaId: 'ikeja', pickupAddress: '', dropAreaId: 'vi', dropAddress: '', vehicle: 'bike', scheduledAt: '',
-    itemType: '', quantity: 1, note: '', recipientName: '', recipientPhone: '', payer: 'sender', payment: 'cash', price: 0, priceTouched: false,
-  };
+  return { type, pickup: null, drop: null, vehicle: 'bike', scheduledAt: '', itemType: '', quantity: 1, note: '', recipientName: '', recipientPhone: '', payer: 'sender', payment: 'cash', price: 0, priceTouched: false };
 }
 
 const stepper = (path, val, cls = '') => `
@@ -101,40 +103,205 @@ const stepper = (path, val, cls = '') => `
   </div>`;
 
 function thread(history, youAre) {
-  return `<div class="thread">${history.map((h) => {
-    const mine = h.by === youAre;
-    return `<div class="bub ${h.by}"><small>${mine ? 'You' : h.by === 'sender' ? 'Sender' : 'Courier'}</small><b>${money(h.price)}</b></div>`;
-  }).join('')}</div>`;
+  return `<div class="thread">${history.map((h) => `<div class="bub ${h.by}"><small>${h.by === youAre ? 'You' : h.by === 'sender' ? 'Sender' : 'Courier'}</small><b>${money(h.price)}</b></div>`).join('')}</div>`;
 }
 
-function miniMap(j) {
-  const P = meta.places;
-  const a = P.find((p) => p.id === j.pickup.areaId), b = P.find((p) => p.id === j.drop.areaId);
-  const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
-  let w = Math.max(46, Math.abs(a.x - b.x) + 30);
-  if (Math.abs(a.y - b.y) + 18 > w * 0.6) w = (Math.abs(a.y - b.y) + 18) / 0.6;
-  const h = w * 0.6, fs = w * 0.05;
-  let s = `<svg class="map" viewBox="${cx - w / 2} ${cy - h / 2} ${w} ${h}" role="img" aria-label="Route from ${esc(j.pickup.area)} to ${esc(j.drop.area)}">`;
-  P.forEach((p) => {
-    const key = p.id === a.id || p.id === b.id;
-    // Label on the side facing the middle of the map so it never runs off the edge or under a marker.
-    const right = p.x <= cx, off = key ? fs * 1.3 : fs * 0.6;
-    s += `<circle cx="${p.x}" cy="${p.y}" r="${fs * 0.28}" fill="#9db3a5"/>`;
-    if (key) s += `<text x="${right ? p.x + off : p.x - off}" y="${p.y + fs * 0.3}" text-anchor="${right ? 'start' : 'end'}" font-size="${fs * 1.1}" fill="#15262a" font-weight="600">${esc(p.name)}</text>`;
+function installHelp() {
+  const ua = navigator.userAgent;
+  if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) return '';
+  if (installEvent) return '<button class="link" data-act="install" style="color:inherit">Install the app</button>';
+  if (/FBAN|FBAV|Instagram|TikTok|MicroMessenger|Line\/|; wv\)/i.test(ua)) return 'To install the app, open this page in Chrome or Safari.';
+  if (/iphone|ipad|ipod/i.test(ua)) return 'To install on iPhone: open this page in Safari, tap Share, then Add to Home Screen.';
+  if (/android/i.test(ua)) return 'To install on Android: open this page in Chrome, tap the menu (three dots), then Install app.';
+  return '';
+}
+
+// ---------- Maps and places (OpenStreetMap services) ----------
+const bounded = () => `${meta.bounds.west},${meta.bounds.north},${meta.bounds.east},${meta.bounds.south}`;
+function cleanAddress(dn) { return String(dn || '').replace(/,\s*Nigeria\s*$/i, '').replace(/,\s*\d{5,6}\s*(?=,|$)/g, '').slice(0, 160); }
+
+async function geocode(q, signal) {
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&countrycodes=ng&bounded=1&viewbox=${bounded()}&q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error('search failed');
+  const rows = await r.json();
+  return rows.map((x) => ({ lat: Number(x.lat), lng: Number(x.lon), label: String(x.name || x.address?.road || x.display_name.split(',')[0]).slice(0, 60), address: cleanAddress(x.display_name) }))
+    .filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lng) && inService(x.lat, x.lng));
+}
+async function reverseGeocode(lat, lng) {
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${lat}&lon=${lng}`, { headers: { Accept: 'application/json' } });
+    if (!r.ok) throw new Error('reverse failed');
+    const j = await r.json();
+    const a = j.address || {};
+    const area = a.suburb || a.neighbourhood || a.city_district || '';
+    const label = (a.road ? (area ? `${a.road}, ${area}` : a.road) : (j.name || area || 'Pinned location')).slice(0, 60);
+    return { label, address: cleanAddress(j.display_name) };
+  } catch { return { label: 'Pinned location', address: '' }; }
+}
+const thin = (pts, max) => (pts.length <= max ? pts : Array.from({ length: max }, (_, i) => pts[Math.round((i * (pts.length - 1)) / (max - 1))]));
+async function fetchRoute(a, b) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`, { signal: ctl.signal });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const rt = j.routes && j.routes[0];
+    if (j.code !== 'Ok' || !rt) return null;
+    return { km: rt.distance / 1000, minutes: Math.round(rt.duration / 60), geo: thin(rt.geometry.coordinates.map(([lng, lat]) => [lat, lng]), 300) };
+  } catch { return null; } finally { clearTimeout(timer); }
+}
+
+let liveMaps = [];
+function destroyMaps() { liveMaps.forEach((m) => m.destroy()); liveMaps = []; }
+function routeMap(el, pickup, drop, geo) {
+  if (!window.TileMap) { el.innerHTML = '<p class="empty">Map unavailable.</p>'; return; }
+  const m = new TileMap(el, { interactive: false });
+  const line = geo && geo.length > 1 ? geo : [[pickup.lat, pickup.lng], [drop.lat, drop.lng]];
+  m.addLine(line, { dashed: !(geo && geo.length > 1) });
+  m.addMarker(pickup.lat, pickup.lng, 'pickup', pickup.label);
+  m.addMarker(drop.lat, drop.lng, 'drop', drop.label);
+  m.fitBounds([...line, pickup, drop]);
+  liveMaps.push(m);
+}
+function mountMaps() {
+  $$('#screen .lmap').forEach((el) => {
+    if (el.dataset.kind === 'job') { const j = findJob(el.dataset.id); if (j) routeMap(el, j.pickup, j.drop, j.routeGeo); }
+    else if (ui.draft && ui.draft.pickup && ui.draft.drop) routeMap(el, ui.draft.pickup, ui.draft.drop, ui.route?.status === 'ok' ? ui.route.geo : null);
   });
-  s += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#0a6a6e" stroke-width="${fs * 0.3}" stroke-dasharray="${fs * 0.7} ${fs * 0.5}" stroke-linecap="round"/>`;
-  s += `<circle cx="${a.x}" cy="${a.y}" r="${fs * 0.75}" fill="#fff" stroke="#0a6a6e" stroke-width="${fs * 0.3}"/>`;
-  s += `<circle cx="${b.x}" cy="${b.y}" r="${fs * 0.85}" fill="#f4b400" stroke="#fff" stroke-width="${fs * 0.2}"/></svg>`;
-  return s;
 }
 
-// ---------- Views: welcome and setup ----------
+// Measure the route by road when both places are chosen, then ask the server for a suggested price.
+async function updateRoute() {
+  const d = ui.draft;
+  if (!d || !d.pickup || !d.drop) { ui.route = null; ui.est = null; render(); return; }
+  const key = `${d.pickup.lat},${d.pickup.lng}|${d.drop.lat},${d.drop.lng}`;
+  if (!ui.route || ui.route.key !== key) {
+    ui.route = { key, status: 'loading' }; ui.est = null; render();
+    const r = await fetchRoute(d.pickup, d.drop);
+    if (!ui.draft || ui.route?.key !== key) return;
+    ui.route = r ? { key, status: 'ok', ...r } : { key, status: 'fail' };
+  }
+  await updateEstimate();
+}
+async function updateEstimate() {
+  const d = ui.draft;
+  if (!d || !d.pickup || !d.drop) return;
+  try {
+    const est = await call('estimate', { pickup: d.pickup, drop: d.drop, vehicle: d.vehicle, routeKm: ui.route?.status === 'ok' ? ui.route.km : undefined });
+    if (!ui.draft) return;
+    ui.est = est; ui.error = '';
+    if (!d.priceTouched) d.price = est.fare;
+  } catch (e) { ui.est = null; ui.error = e.message; }
+  render();
+}
+
+// ---------- Place picker (a full-screen sheet) ----------
+let sheetMap = null, searchTimer = 0, searchCtl = null;
+const placeText = (kind) => (kind === 'pickup' ? 'Pickup location' : 'Delivery location');
+function openSheet(kind) {
+  ui.sh = { kind, q: '', results: [], msg: '', mode: 'search', seq: 0, center: null, label: '', address: '' };
+  $('#sheet').hidden = false;
+  drawSheet();
+  setTimeout(() => { const i = $('#sheet input'); if (i) i.focus(); }, 60);
+}
+function closeSheet() {
+  if (sheetMap) { sheetMap.destroy(); sheetMap = null; }
+  clearTimeout(searchTimer);
+  ui.sh = null;
+  const s = $('#sheet'); s.hidden = true; s.innerHTML = '';
+}
+function drawSheet() {
+  const sh = ui.sh, el = $('#sheet');
+  if (!sh) return;
+  if (sheetMap) { sheetMap.destroy(); sheetMap = null; }
+  if (sh.mode === 'map') {
+    el.innerHTML = `<div class="sh-head"><button class="icon-btn" data-act="sheet-search" aria-label="Back to search">${ic('back')}</button><h2 class="title">${placeText(sh.kind)}</h2></div>
+      <div class="sh-map" id="sh-map"></div>
+      <div class="sh-foot"><p id="sh-label" class="sub">Move the map to put the pin on the exact spot.</p><button class="btn" data-act="sheet-confirm">Confirm location</button></div>`;
+    const d = ui.draft, here = d[sh.kind] || d[sh.kind === 'pickup' ? 'drop' : 'pickup'] || meta.center;
+    sheetMap = new TileMap($('#sh-map'), { center: here, zoom: d[sh.kind] ? 16 : 14, centerPin: true });
+    sheetMap.on('moveend', resolveCenter);
+    resolveCenter();
+  } else {
+    el.innerHTML = `<div class="sh-head"><button class="icon-btn" data-act="sheet-close" aria-label="Close">${ic('back')}</button><h2 class="title">${placeText(sh.kind)}</h2></div>
+      <div class="sh-body">
+        <label class="field"><span class="sr" style="position:absolute;left:-9999px">Search</span><input class="input" type="search" autocomplete="off" placeholder="Search a street, area or landmark" data-bind="sh.q" data-search="1" value="${esc(sh.q)}"></label>
+        <button class="pick" data-act="sheet-gps">${ic('locate')}<span class="grow"><b>Use my current location</b></span></button>
+        <button class="pick" data-act="sheet-map">${ic('pin')}<span class="grow"><b>Choose on the map</b><br><small class="muted">Drop a pin on the exact spot</small></span></button>
+        <div id="sh-results"></div>
+      </div>`;
+    renderResults();
+  }
+}
+function renderResults() {
+  const box = $('#sh-results'), sh = ui.sh;
+  if (!box || !sh) return;
+  if (sh.results.length) box.innerHTML = sh.results.map((r, i) => `<button class="pick" data-act="sheet-pick" data-i="${i}">${ic('pin')}<span class="grow"><b>${esc(r.label)}</b><br><small class="muted">${esc(r.address)}</small></span></button>`).join('');
+  else if (sh.msg) box.innerHTML = `<p class="skel">${esc(sh.msg)}</p>`;
+  else box.innerHTML = `<p class="h3" style="margin-top:.4rem">Popular areas</p><div class="chips">${meta.areas.map((a) => `<button data-act="sheet-area" data-name="${esc(a)}">${esc(a)}</button>`).join('')}</div>`;
+}
+function scheduleSearch() {
+  const sh = ui.sh;
+  clearTimeout(searchTimer);
+  const q = sh.q.trim();
+  if (q.length < 3) { sh.results = []; sh.msg = ''; sh.seq++; renderResults(); return; }
+  sh.msg = 'Searching...'; renderResults();
+  searchTimer = setTimeout(() => runSearch(q), 500);
+}
+async function runSearch(q, alt) {
+  const sh = ui.sh;
+  if (!sh) return;
+  const seq = ++sh.seq;
+  if (searchCtl) searchCtl.abort();
+  searchCtl = new AbortController();
+  try {
+    let res = await geocode(alt || q, searchCtl.signal);
+    if (!res.length && !alt) res = await geocode(q + ', Port Harcourt', searchCtl.signal);
+    if (ui.sh !== sh || sh.seq !== seq) return;
+    sh.results = res;
+    sh.msg = res.length ? '' : 'No matches in Port Harcourt. Try a landmark, or choose the spot on the map.';
+  } catch (e) {
+    if (e.name === 'AbortError' || ui.sh !== sh || sh.seq !== seq) return;
+    sh.results = []; sh.msg = 'Search is not available right now. Choose the spot on the map instead.';
+  }
+  renderResults();
+}
+async function resolveCenter() {
+  const sh = ui.sh;
+  if (!sh || !sheetMap) return;
+  const c = sheetMap.getCenter(), seq = ++sh.seq;
+  sh.center = c; sh.label = ''; sh.address = '';
+  const lab = $('#sh-label');
+  if (!inService(c.lat, c.lng)) { if (lab) lab.textContent = 'That spot is outside our Port Harcourt service area.'; return; }
+  if (lab) lab.textContent = 'Finding the address...';
+  const r = await reverseGeocode(c.lat, c.lng);
+  if (ui.sh !== sh || sh.seq !== seq) return;
+  sh.label = r.label; sh.address = r.address;
+  const l2 = $('#sh-label');
+  if (l2) l2.textContent = r.address || r.label;
+}
+function setPoint(kind, pt) {
+  ui.draft[kind] = pt;
+  closeSheet();
+  updateRoute();
+}
+function useGps() {
+  const sh = ui.sh;
+  if (!navigator.geolocation) return toast('Location is not available on this device.', true);
+  toast('Finding your location...');
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    if (!inService(lat, lng)) return toast('You are outside our Port Harcourt service area. Search for a place or choose it on the map.', true);
+    const r = await reverseGeocode(lat, lng);
+    if (ui.sh === sh) setPoint(sh.kind, { lat, lng, label: r.label, address: r.address });
+  }, () => toast('Could not get your location. Allow location access, or search instead.', true), { enableHighAccuracy: true, timeout: 12000 });
+}
+
+// ---------- Views: welcome and accounts ----------
 function vWelcome() {
-  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
-  let install = '';
-  if (installEvent) install = '<button class="link" data-act="install" style="color:#fff">Install the app</button>';
-  else if (ios && !standalone) install = 'On iPhone: tap Share, then Add to Home Screen.';
+  const help = installHelp();
   return `<div class="welcome">
     <div class="logo"><img src="/icons/icon.svg" alt="">Bargo</div>
     <div>
@@ -144,44 +311,51 @@ function vWelcome() {
         <g class="tag"><rect x="108" y="38" width="104" height="38" rx="19" fill="#fff"/><text x="160" y="63" text-anchor="middle" font-size="18" font-weight="700" fill="#005357" font-family="Poppins, sans-serif">₦3,500</text></g></svg>
       </div>
       <h1>Book a courier. Agree the price.</h1>
-      <p>Name your price. Couriers accept or counter. When you both agree, the deal is sealed.</p>
+      <p>Deliveries across Port Harcourt. Name your price, couriers accept or counter, and the deal is sealed when you both agree.</p>
+      ${storageWarning()}
       <div class="btns">
-        <button class="btn" data-act="role" data-role="sender">Send a package</button>
-        <button class="btn ghost" data-act="role" data-role="driver">Deliver as a courier</button>
+        <button class="btn" data-act="auth-start" data-role="sender">Send a package</button>
+        <button class="btn ghost" data-act="auth-start" data-role="driver">Deliver as a courier</button>
       </div>
     </div>
-    <p class="foot">${install ? install + '<br>' : ''}<button class="link" data-act="role" data-role="admin" style="color:#cfe6e6;font-weight:500">Admin</button></p>
+    <p class="foot">${help ? help + '<br>' : ''}${meta.adminEnabled ? '<button class="link" data-act="admin-start" style="color:#cfe6e6;font-weight:500">Admin</button>' : ''}</p>
   </div>`;
 }
 
-function vSenderSetup() {
-  const p = ui.prof;
-  return `<div class="top"><button class="icon-btn" data-act="leave" aria-label="Back">${ic('back')}</button></div>
-    <h2 class="title">Your details</h2><p class="sub" style="margin:.3rem 0 1.2rem">Couriers see your first name. Your phone number is shared only after a deal is sealed.</p>
-    <form data-form="setup">
-      <label class="field"><span>Your name</span><input class="input" required maxlength="60" autocomplete="name" data-bind="prof.name" value="${esc(p.name ?? me.name)}"></label>
-      <label class="field"><span>Phone number</span><input class="input" required maxlength="20" inputmode="tel" autocomplete="tel" data-bind="prof.phone" value="${esc(p.phone ?? me.phone)}"></label>
-      <button class="btn" type="submit">Continue</button>
-    </form>`;
+function vAuth() {
+  const a = ui.auth, isDriver = a.role === 'driver', reg = a.mode === 'register';
+  const veh = a.vehicle || 'bike';
+  return `<div class="top"><button class="icon-btn" data-act="auth-back" aria-label="Back">${ic('back')}</button></div>
+    <h2 class="title">${reg ? 'Create your account' : 'Welcome back'}</h2>
+    <p class="sub" style="margin:.3rem 0 1.1rem">${isDriver ? 'Courier account' : 'Sender account'}</p>
+    <div class="seg" role="group" aria-label="Log in or create an account">
+      <button type="button" data-act="auth-mode" data-mode="login" aria-pressed="${!reg}">Log in</button>
+      <button type="button" data-act="auth-mode" data-mode="register" aria-pressed="${reg}">Create account</button>
+    </div>
+    ${storageWarning()}
+    <form data-form="auth" novalidate>
+      ${reg ? `<label class="field"><span>Full name</span><input class="input" maxlength="60" autocomplete="name" data-bind="auth.name" value="${esc(a.name ?? '')}"></label>` : ''}
+      <label class="field"><span>Phone number</span><input class="input" type="tel" inputmode="tel" maxlength="20" autocomplete="username" placeholder="08012345678" data-bind="auth.phone" value="${esc(a.phone ?? '')}"></label>
+      ${reg && isDriver ? `<p class="sub" style="margin-bottom:.4rem">Your vehicle</p>
+        <div class="vehicles">${['bike', 'car', 'van'].map((v) => `<button type="button" class="vehicle" data-act="auth-veh" data-v="${v}" aria-pressed="${veh === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
+        <label class="field"><span>Plate number</span><input class="input" maxlength="15" autocapitalize="characters" data-bind="auth.plate" value="${esc(a.plate ?? '')}"></label>` : ''}
+      <div class="field"><label for="auth-pw" style="color:var(--muted);font-size:.8rem">Password</label>
+        <div class="pw"><input id="auth-pw" class="input" type="${a.show ? 'text' : 'password'}" autocomplete="${reg ? 'new-password' : 'current-password'}" placeholder="${reg ? 'At least 8 characters' : ''}" data-bind="auth.password" value="${esc(a.password ?? '')}"><button type="button" data-act="toggle-pw">${a.show ? 'Hide' : 'Show'}</button></div></div>
+      ${a.error ? `<p class="err" role="alert">${esc(a.error)}</p>` : ''}
+      <button class="btn" type="submit" style="margin-top:.8rem" ${a.busy ? 'disabled' : ''}>${a.busy ? 'Please wait...' : reg ? 'Create account' : 'Log in'}</button>
+    </form>
+    <p class="help">${reg ? (isDriver ? 'Senders see your name, vehicle and plate after you make an offer.' : 'Couriers see only your first name until a deal is sealed.') : 'Forgot your password? Ask Bargo support to reset it, then change it in Profile.'}</p>`;
 }
 
-function vDriverPick() {
-  const list = ui.drivers;
-  let h = `<div class="top"><button class="icon-btn" data-act="leave" aria-label="Back">${ic('back')}</button></div>
-    <h2 class="title">Who is driving?</h2><p class="sub" style="margin:.3rem 0 1.2rem">Choose your courier profile, or register a new one.</p>`;
-  if (!list) h += '<p class="empty">Loading couriers...</p>';
-  else h += list.map((d) => `<button class="pick" data-act="pick-driver" data-id="${esc(d.id)}"><span class="avatar">${esc(d.name[0])}</span><span class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></span>${ic(d.vehicle)}</button>`).join('');
-  h += `<button class="link" data-act="toggle-reg">${ui.showReg ? 'Hide registration' : 'Register as a new courier'}</button>`;
-  if (ui.showReg) {
-    const r = ui.reg;
-    h += `<form data-form="register" style="margin-top:.8rem">
-      <label class="field"><span>Full name</span><input class="input" required maxlength="60" data-bind="reg.name" value="${esc(r.name ?? '')}"></label>
-      <label class="field"><span>Phone number</span><input class="input" required maxlength="20" inputmode="tel" data-bind="reg.phone" value="${esc(r.phone ?? '')}"></label>
-      <div class="vehicles">${['bike', 'car', 'van'].map((v) => `<button type="button" class="vehicle" data-act="reg-veh" data-v="${v}" aria-pressed="${(r.vehicle || 'bike') === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
-      <label class="field"><span>Plate number</span><input class="input" required maxlength="15" data-bind="reg.plate" value="${esc(r.plate ?? '')}"></label>
-      <button class="btn" type="submit">Register</button></form>`;
-  }
-  return h;
+function vAdminLogin() {
+  const a = ui.admin;
+  return `<div class="top"><button class="icon-btn" data-act="admin-back" aria-label="Back">${ic('back')}</button></div>
+    <h2 class="title">Admin</h2><p class="sub" style="margin:.3rem 0 1.1rem">Enter the admin PIN.</p>
+    <form data-form="admin-login">
+      <label class="field"><span>PIN</span><input class="input" type="password" inputmode="numeric" autocomplete="off" data-bind="admin.pin" value="${esc(a.pin ?? '')}"></label>
+      ${a.error ? `<p class="err" role="alert">${esc(a.error)}</p>` : ''}
+      <button class="btn" type="submit" style="margin-top:.6rem">Open admin</button>
+    </form>`;
 }
 
 // ---------- Views: sender ----------
@@ -207,23 +381,32 @@ function vSHome() {
   return h;
 }
 
+function placeButton(kind, label, pt) {
+  return `<button type="button" class="place" data-act="open-sheet" data-kind="${kind}"><span class="dot ${kind === 'pickup' ? 'start' : 'end'}"></span>
+    <span class="grow"><small>${label}</small><b class="${pt ? '' : 'ph'}">${pt ? esc(pt.label) : 'Choose ' + (kind === 'pickup' ? 'pickup' : 'delivery') + ' location'}</b>${pt && pt.address ? `<em>${esc(pt.address)}</em>` : ''}</span>${ic('chevron')}</button>`;
+}
+
 function vSNew() {
   const d = ui.draft || (ui.draft = defaultDraft('instant'));
-  const places = meta.places;
-  const opts = (sel) => places.map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
   const bar = `<div class="steps">${[1, 2, 3].map((n) => `<i class="${n <= ui.step ? 'on' : ''}"></i>`).join('')}</div>`;
   const top = `<div class="top"><button class="icon-btn" data-act="new-back" aria-label="Back">${ic('back')}</button></div>`;
   const err = ui.error ? `<p class="err" role="alert">${esc(ui.error)}</p>` : '';
   if (ui.step === 1) {
+    const r = ui.route;
+    let routeInfo = '';
+    if (d.pickup && d.drop) {
+      const status = !r || r.status === 'loading' ? 'Measuring the route by road...'
+        : r.status === 'ok' ? `<b>${ui.est ? ui.est.km : (r.km).toFixed(1)} km</b> by road, about ${ui.est ? ui.est.minutes : r.minutes} min`
+          : `About <b>${ui.est ? ui.est.km : '...'} km</b> (estimated: the road route could not be measured)`;
+      routeInfo = `<div class="routebox"><div class="lmap" data-kind="draft" role="img" aria-label="Map of your route"></div><p>${status}</p></div>`;
+    }
     return `${top}<h2 class="title">${d.type === 'scheduled' ? 'Schedule Delivery' : 'Instant Delivery'}</h2>${bar}
-      <label class="field"><span>Pickup area</span><select class="input" data-bind="draft.pickupAreaId">${opts(d.pickupAreaId)}</select></label>
-      <label class="field"><span>Pickup address</span><input class="input" maxlength="120" placeholder="32 Samwell Sq, Chevron" data-bind="draft.pickupAddress" value="${esc(d.pickupAddress)}"></label>
-      <label class="field"><span>Delivery area</span><select class="input" data-bind="draft.dropAreaId">${opts(d.dropAreaId)}</select></label>
-      <label class="field"><span>Delivery address</span><input class="input" maxlength="120" placeholder="21b Karimu Kotun Street" data-bind="draft.dropAddress" value="${esc(d.dropAddress)}"></label>
+      ${placeButton('pickup', 'Pickup', d.pickup)}${placeButton('drop', 'Delivery', d.drop)}
+      ${routeInfo}
       <p class="sub" style="margin-bottom:.4rem">Vehicle type</p>
       <div class="vehicles">${['bike', 'car', 'van'].map((v) => `<button type="button" class="vehicle" data-act="veh" data-v="${v}" aria-pressed="${d.vehicle === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
       ${d.type === 'scheduled' ? `<label class="field"><span>Pickup date and time</span><input class="input" type="datetime-local" data-bind="draft.scheduledAt" value="${esc(d.scheduledAt)}"></label>` : ''}
-      ${err}<button class="btn" data-act="new-next" style="margin-top:.6rem">Next</button>`;
+      ${err}<button class="btn" data-act="new-next" style="margin-top:.4rem">Next</button>`;
   }
   if (ui.step === 2) {
     return `${top}<h2 class="title">Details</h2>${bar}
@@ -240,8 +423,8 @@ function vSNew() {
   }
   const e = ui.est || { km: 0, minutes: 0, fare: 0 };
   return `${top}<h2 class="title">Your price</h2>${bar}
-    <div class="panel"><div class="row between"><b>${esc(places.find((p) => p.id === d.pickupAreaId).name)} ${ic('arrow')} ${esc(places.find((p) => p.id === d.dropAreaId).name)}</b>${ic(d.vehicle)}</div>
-    <p class="sub">${esc(d.itemType)}, ${esc(vlabel(d.vehicle))}, about ${e.km} km</p></div>
+    <div class="panel"><div class="row between"><b>${esc(d.pickup.label)} ${ic('arrow')} ${esc(d.drop.label)}</b>${ic(d.vehicle)}</div>
+    <p class="sub">${esc(d.itemType)}, ${esc(vlabel(d.vehicle))}, ${e.approx ? 'about' : ''} ${e.km} km${e.approx ? ' (estimated)' : ' by road'}</p></div>
     <p class="sub" style="margin-bottom:.4rem">Your offer to couriers</p>${stepper('draft.price', d.price)}
     <p class="sub" style="margin:.5rem 0 1rem">Suggested for this trip: <b>${money(e.fare)}</b>. Couriers can accept your price or send a counter-offer. The deal is sealed when you both agree.</p>
     ${err}<button class="btn" data-act="post-job">Post request</button>`;
@@ -249,10 +432,9 @@ function vSNew() {
 
 function jobCardS(j) {
   const t = turnCount(j);
-  const price = j.agreedPrice || j.openingPrice;
   return `<article class="jcard ${t ? 'hot' : ''}" role="link" tabindex="0" data-act="open-job" data-id="${j.id}">
     <div class="head"><div><h4>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></h4><div class="route-line">${route(j)}</div></div>${chip(j)}</div>
-    <div class="row between" style="margin-top:.5rem"><span class="price">${money(price)}${j.agreedPrice ? '' : ' <small class="muted">your offer</small>'}</span>
+    <div class="row between" style="margin-top:.5rem"><span class="price">${money(j.agreedPrice || j.openingPrice)}${j.agreedPrice ? '' : ' <small class="muted">your offer</small>'}</span>
     ${t ? `<span class="badge">${t} ${t === 1 ? 'offer needs' : 'offers need'} you</span>` : j.status === 'open' ? `<small class="muted">${j.negotiations.filter((n) => n.status === 'active').length} offers</small>` : ''}</div></article>`;
 }
 
@@ -294,25 +476,26 @@ function sealedBanner(j, who) {
   return `<div class="sealed ${anim}"><svg class="ring" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="24"/><path d="M14 25l7 7 13-15"/></svg>
     <div><b>Deal sealed at ${money(j.agreedPrice)}</b><span class="small">${who}</span></div></div>`;
 }
-
 function progress(j) {
   const order = ['agreed', 'picked_up', 'delivered'];
   const at = order.indexOf(j.status);
   return `<div class="progress">${order.map((s, i) => `<div class="${i <= at ? 'done' : ''}"><i></i>${STEP_LABEL[s]}</div>`).join('')}</div>`;
 }
+const jobMap = (j) => `<div class="routebox"><div class="lmap" data-kind="job" data-id="${j.id}" role="img" aria-label="Map from ${esc(j.pickup.label)} to ${esc(j.drop.label)}"></div><p><b>${j.km} km</b> ${j.approxDistance ? '(estimated distance)' : 'by road'}</p></div>`;
+const addr = (p) => `${esc(p.label)}${p.address ? `<br><small class="muted">${esc(p.address)}</small>` : ''}`;
 
 function vSJob() {
   const j = senderJob(nav.cur.id);
   const top = `<div class="top"><button class="icon-btn" data-act="back" aria-label="Back">${ic('back')}</button><h2 class="title grow">Delivery #${nav.cur.id}</h2></div>`;
   if (!j) return top + empty('box', 'This delivery could not be found.');
-  let h = top + miniMap(j) + `<div class="row between"><b>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></b>${chip(j)}</div>
-    <div class="kv"><div><small>Pickup</small><span>${esc(j.pickup.address)}, ${esc(j.pickup.area)}</span></div><div><small>Delivery</small><span>${esc(j.drop.address)}, ${esc(j.drop.area)}</span></div>
-    <div><small>Recipient</small><span>${esc(j.recipientName)}</span></div><div><small>Vehicle</small><span>${esc(vlabel(j.vehicle))}, ${j.km} km</span></div>
+  let h = top + jobMap(j) + `<div class="row between"><b>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></b>${chip(j)}</div>
+    <div class="kv"><div><small>Pickup</small><span>${addr(j.pickup)}</span></div><div><small>Delivery</small><span>${addr(j.drop)}</span></div>
+    <div><small>Recipient</small><span>${esc(j.recipientName)}</span></div><div><small>Vehicle</small><span>${esc(vlabel(j.vehicle))}</span></div>
     ${j.scheduledAt ? `<div class="full"><small>Pickup time</small><span>${fmtDate(j.scheduledAt)}</span></div>` : ''}</div>`;
   if (j.status === 'open') {
     h += `<div class="panel"><div class="row between"><span class="sub">Your offer</span><b class="price">${money(j.openingPrice)}</b></div></div>`;
     const live = j.negotiations.filter((n) => n.status === 'active'), rest = j.negotiations.filter((n) => n.status !== 'active');
-    h += `<p class="h3">Offers from couriers</p>`;
+    h += '<p class="h3">Offers from couriers</p>';
     h += live.length ? live.map((n) => offerCardS(j, n)).join('') : empty('bike', `No offers yet. Online couriers with a ${vlabel(j.vehicle).toLowerCase()} can see your request now.`);
     h += rest.map((n) => offerCardS(j, n)).join('');
   } else if (j.driver && j.status !== 'cancelled') {
@@ -320,7 +503,7 @@ function vSJob() {
     h += sealedBanner(j, j.status === 'delivered' ? 'Delivered. Thank you for using Bargo.' : `You pay ${j.payment === 'cash' ? 'cash' : 'by bank transfer'} to the courier.`);
     h += progress(j);
     h += `<div class="panel"><div class="row"><span class="avatar">${esc(d.name[0])}</span><div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars</small></div>
-      <a class="btn sm" style="width:auto;text-decoration:none" href="tel:${esc(d.phone)}">${ic('phone')}</a></div></div>`;
+      <a class="btn sm" style="width:auto;text-decoration:none" href="tel:${esc(d.phone)}" aria-label="Call ${esc(d.name)}">${ic('phone')}</a></div></div>`;
     const sealed = j.negotiations.find((n) => n.status === 'sealed');
     if (sealed) h += `<p class="h3">How you agreed</p>${thread(sealed.history, 'sender')}`;
     if (j.status === 'delivered') {
@@ -339,31 +522,25 @@ function jobCardD(j, actions) {
   const last = n ? n.history[n.history.length - 1].price : j.openingPrice;
   let h = `<article class="jcard ${turn ? 'hot' : ''}" role="link" tabindex="0" data-act="open-job" data-id="${j.id}">
     <div class="head"><div><h4>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></h4><div class="route-line">${route(j)}</div></div><span class="price">${money(j.agreedPrice || last)}</span></div>
-    <div class="route-line" style="margin-top:.35rem">${ic('pin')}${esc(j.drop.address)} &middot; ${j.km} km${j.scheduledAt ? ' &middot; ' + fmtDate(j.scheduledAt) : ''}</div>`;
+    <div class="route-line" style="margin-top:.35rem">${ic('pin')}${j.km} km${j.approxDistance ? ' (est.)' : ''} &middot; ${esc(j.drop.address || j.drop.label)}${j.scheduledAt ? ' &middot; ' + fmtDate(j.scheduledAt) : ''}</div>`;
   if (n && n.status === 'active') h += `<p class="small" style="margin-top:.4rem;color:var(--amber);font-weight:600">${turn ? `Sender countered ${money(last)}` : `Waiting for sender (you asked ${money(last)})`}</p>`;
-  if (actions) {
-    h += `<div class="btns"><button class="btn soft" data-act="d-reject" data-id="${j.id}">Reject</button><button class="btn line" data-act="open-job" data-id="${j.id}">Counter</button><button class="btn" data-act="d-accept" data-id="${j.id}">Accept</button></div>`;
-  }
+  if (actions) h += `<div class="btns"><button class="btn soft" data-act="d-reject" data-id="${j.id}">Reject</button><button class="btn line" data-act="open-job" data-id="${j.id}">Counter</button><button class="btn" data-act="d-accept" data-id="${j.id}">Accept</button></div>`;
   return h + '</article>';
-}
-
-function onlineSwitch() {
-  const d = data.driver, on = d.status === 'online';
-  return `<label class="switch" title="${on ? 'Online' : 'Offline'}"><input type="checkbox" data-act="toggle-online" ${on ? 'checked' : ''} aria-label="Online"><i></i></label>`;
 }
 
 function vDHome() {
   const f = data, d = f.driver, on = d.status === 'online';
-  let h = `<div class="greet"><div class="row"><span class="avatar">${esc(d.name[0])}</span><div><small>Welcome back</small><strong>${esc(d.name)}</strong></div></div><div class="row"><small class="muted">${on ? 'Online' : 'Offline'}</small>${onlineSwitch()}</div></div>`;
+  let h = `<div class="greet"><div class="row"><span class="avatar">${esc(d.name[0])}</span><div><small>Welcome back</small><strong>${esc(d.name)}</strong></div></div><div class="row"><small class="muted">${on ? 'Online' : 'Offline'}</small>
+    <label class="switch" title="${on ? 'Online' : 'Offline'}"><input type="checkbox" data-act="toggle-online" ${on ? 'checked' : ''} aria-label="Online"><i></i></label></div></div>`;
   if (f.current.length) {
     const j = f.current[0];
     h += `<article class="banner" role="link" tabindex="0" data-act="open-job" data-id="${j.id}" style="cursor:pointer"><small class="muted">You have 1 delivery in progress</small><b>#${j.id} ${esc(j.itemType)}</b>
       <small>Recipient: ${esc(j.recipientName || 'hidden')}</small><br><small><b style="display:inline;color:var(--amber)">${money(j.agreedPrice)} &middot; ${STATUS[j.status]}</b></small></article>`;
   }
   if (f.offers.length) h += `<p class="h3" style="margin-top:0">Your offers</p>${f.offers.map((j) => jobCardD(j, false)).join('')}`;
-  h += `<div class="row between"><p class="h3" style="margin:.2rem 0 .6rem">Available requests</p></div>`;
-  if (!on) h += `<p class="notice">You are offline. Go online to see and take requests.</p>`;
-  else if (f.current.length) h += `<p class="notice">Finish your current delivery to take another.</p>` + f.available.map((j) => jobCardD(j, false)).join('');
+  h += '<p class="h3" style="margin:.2rem 0 .6rem">Available requests</p>';
+  if (!on) h += '<p class="notice">You are offline. Go online to see and take requests.</p>';
+  else if (f.current.length) h += '<p class="notice">Finish your current delivery to take another.</p>' + f.available.map((j) => jobCardD(j, false)).join('');
   else h += f.available.length ? f.available.map((j) => jobCardD(j, true)).join('') : empty('bike', `No requests for a ${vlabel(d.vehicle).toLowerCase()} right now. New ones appear here instantly.`);
   return h;
 }
@@ -373,9 +550,9 @@ function vDJob() {
   const top = `<div class="top"><button class="icon-btn" data-act="back" aria-label="Back">${ic('back')}</button><h2 class="title grow">Delivery #${nav.cur.id}</h2></div>`;
   if (!j) return top + empty('box', 'This delivery is no longer available.') + '<button class="btn" data-act="back">Back to requests</button>';
   const e = data.earnings;
-  let h = top + miniMap(j) + `<div class="row between"><b>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></b>${chip(j)}</div>
-    <div class="kv"><div><small>Pickup</small><span>${esc(j.pickup.address)}, ${esc(j.pickup.area)}</span></div><div><small>Delivery</small><span>${esc(j.drop.address)}, ${esc(j.drop.area)}</span></div>
-    <div><small>Distance</small><span>${j.km} km, ${esc(vlabel(j.vehicle))}</span></div><div><small>Payment</small><span>${j.payer === 'sender' ? 'Sender' : 'Recipient'} pays, ${j.payment === 'cash' ? 'cash' : 'transfer'}</span></div>
+  let h = top + jobMap(j) + `<div class="row between"><b>${esc(j.itemType)} <span class="muted small">x${j.quantity}</span></b>${chip(j)}</div>
+    <div class="kv"><div><small>Pickup</small><span>${addr(j.pickup)}</span></div><div><small>Delivery</small><span>${addr(j.drop)}</span></div>
+    <div><small>Vehicle</small><span>${esc(vlabel(j.vehicle))}</span></div><div><small>Payment</small><span>${j.payer === 'sender' ? 'Sender' : 'Recipient'} pays, ${j.payment === 'cash' ? 'cash' : 'transfer'}</span></div>
     ${j.note ? `<div class="full"><small>Note</small><span>${esc(j.note)}</span></div>` : ''}${j.scheduledAt ? `<div class="full"><small>Pickup time</small><span>${fmtDate(j.scheduledAt)}</span></div>` : ''}</div>`;
   if (j.mine && j.status !== 'cancelled') {
     h += sealedBanner(j, j.status === 'delivered' ? 'Delivered.' : `You earn ${money(j.agreedPrice)} on this trip.`) + progress(j);
@@ -389,7 +566,7 @@ function vDJob() {
   }
   const n = j.negotiation;
   if (j.status !== 'open' || (n && n.status !== 'active')) return h + `<p class="notice">${n && n.status === 'declined' ? 'The sender declined your offer.' : 'This delivery is no longer available.'}</p>`;
-  const key = `${j.id}:${data.driver.id}`;
+  const key = `${j.id}:${me.id}`;
   const turn = !n || n.turn === 'driver';
   const last = n ? n.history[n.history.length - 1].price : j.openingPrice;
   if (n) h += `<p class="h3">Negotiation</p>${thread(n.history, 'driver')}`;
@@ -423,38 +600,41 @@ function vDBook() {
 
 function vProfile() {
   const isD = me.role === 'driver';
-  let h = '<h2 class="title" style="margin-bottom:1rem">Profile</h2>';
-  if (isD) {
-    const d = data.driver;
-    h += `<div class="row" style="margin-bottom:1rem"><span class="avatar lg">${esc(d.name[0])}</span><div><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></div></div>
-      <div class="stats"><div class="stat"><b>${d.rating.toFixed(1)}</b><small>Rating</small></div><div class="stat"><b>${d.completed}</b><small>Deliveries</small></div><div class="stat"><b>${esc(d.phone || '')}</b><small>Phone</small></div></div>`;
-  } else {
-    h += `<div class="row" style="margin-bottom:1rem"><span class="avatar lg">${esc(me.name[0] || '?')}</span><div><b>${esc(me.name)}</b><br><small class="muted">${esc(me.phone)}</small></div></div>`;
-  }
-  h += `<button class="btn soft" data-act="leave">Switch role</button>`;
-  if (installEvent) h += `<button class="btn line" style="margin-top:.6rem" data-act="install">Install the app</button>`;
+  const d = isD ? data?.driver : null;
+  let h = `<h2 class="title" style="margin-bottom:1rem">Profile</h2>
+    <div class="row" style="margin-bottom:1rem"><span class="avatar lg">${esc(me.name[0] || '?')}</span><div><b>${esc(me.name)}</b><br><small class="muted">${esc(me.phone)}${isD ? `, ${esc(vlabel(me.vehicle))}, ${esc(me.plate)}` : ''}</small></div></div>`;
+  if (d) h += `<div class="stats"><div class="stat"><b>${d.rating.toFixed(1)}</b><small>Rating</small></div><div class="stat"><b>${d.completed}</b><small>Deliveries</small></div><div class="stat"><b>${money(data.earnings.commissionPerDay)}</b><small>Daily commission</small></div></div>`;
+  h += `<form class="panel" data-form="pw"><p class="sub" style="margin-bottom:.6rem">Change password</p>
+    <label class="field"><span>Current password</span><input class="input" type="password" autocomplete="current-password" data-bind="pw.current" value="${esc(ui.pw.current ?? '')}"></label>
+    <label class="field"><span>New password (8 or more characters)</span><input class="input" type="password" autocomplete="new-password" data-bind="pw.next" value="${esc(ui.pw.next ?? '')}"></label>
+    ${ui.pw.error ? `<p class="err" role="alert">${esc(ui.pw.error)}</p>` : ''}
+    <button class="btn sm inline" type="submit">Save new password</button></form>
+    <button class="btn soft" data-act="logout">${ic('logout')} Log out</button>`;
+  const help = installHelp();
+  if (help) h += `<p class="help" style="margin-top:1rem">${help}</p>`;
   return h;
 }
 
 // ---------- Views: admin ----------
 function vAdmin() {
-  const head = `<div class="top"><button class="icon-btn" data-act="leave" aria-label="Back">${ic('back')}</button><h2 class="title grow">Admin</h2></div>`;
-  if (meta.adminPinRequired && !data) {
-    return `<div class="admin" style="max-width:380px">${head}<form data-form="admin-login"><label class="field"><span>Admin PIN</span><input class="input" type="password" inputmode="numeric" autocomplete="off" data-bind="pinf.pin" value="${esc(ui.pinf?.pin || '')}"></label>
-      ${ui.pinBad ? '<p class="err">That PIN is not correct.</p>' : ''}<button class="btn" type="submit">Open admin</button></form></div>`;
-  }
+  const head = `<div class="top"><button class="icon-btn" data-act="logout" aria-label="Log out of admin">${ic('back')}</button><h2 class="title grow">Admin</h2></div>`;
   if (!data) return `<div class="admin">${head}<p class="empty">Loading...</p></div>`;
   const t = data.totals;
+  const reset = (u) => `<button class="btn line sm inline" data-act="admin-reset" data-id="${esc(u.id)}" data-name="${esc(u.name)}">Reset password</button>`;
   return `<div class="admin">${head}
+    ${ui.tempPw ? `<div class="temp" role="status">New password for <b>${esc(ui.tempPw.name)}</b> (${esc(ui.tempPw.phone)}): <code>${esc(ui.tempPw.password)}</code><br><small>Shown once. Send it to them and ask them to change it in Profile.</small></div>` : ''}
     <div class="stats"><div class="stat dark"><b>${money(t.commission)}</b><small>Commission collected</small></div><div class="stat"><b>${money(t.dealValue)}</b><small>Deal value delivered</small></div>
-      <div class="stat"><b>${t.delivered}</b><small>Delivered</small></div><div class="stat"><b>${t.active}</b><small>On the road</small></div><div class="stat"><b>${t.open}</b><small>Open for offers</small></div></div>
+      <div class="stat"><b>${t.delivered}</b><small>Delivered</small></div><div class="stat"><b>${t.active}</b><small>On the road</small></div><div class="stat"><b>${t.open}</b><small>Open for offers</small></div>
+      <div class="stat"><b>${t.couriers}</b><small>Couriers</small></div><div class="stat"><b>${t.senders}</b><small>Senders</small></div></div>
     <form class="panel" data-form="admin-save"><p class="sub">Daily commission per courier</p>
-      <div class="row" style="margin-top:.4rem"><input class="input" inputmode="numeric" data-num="1" data-bind="adm.commission" value="${esc(ui.adm?.commission ?? data.settings.commissionPerDay)}" style="max-width:180px" aria-label="Daily commission in naira"><button class="btn sm" style="width:auto" type="submit">Save</button></div>
+      <div class="row" style="margin-top:.4rem"><input class="input" inputmode="numeric" data-num="1" data-bind="adm.commission" value="${esc(ui.adm.commission ?? data.settings.commissionPerDay)}" style="max-width:180px" aria-label="Daily commission in naira"><button class="btn sm inline" type="submit">Save</button></div>
       <p class="sub" style="margin-top:.5rem">Charged once per courier on their first delivery of each day. Changes apply to later days. Past charges stay as they were.</p></form>
-    <div class="cols"><div><p class="h3">Couriers</p><div class="tbl-wrap"><table class="tbl"><tr><th>Courier</th><th>Status</th><th>Trips</th><th>Paid us</th></tr>
-      ${data.drivers.map((d) => `<tr><td><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></td><td>${esc(d.status)}</td><td>${d.completed}</td><td>${money(d.earnings.commission)}</td></tr>`).join('')}</table></div></div>
-    <div><p class="h3">Recent deliveries</p><div class="tbl-wrap"><table class="tbl"><tr><th>#</th><th>Route</th><th>Price</th><th>Status</th></tr>
-      ${data.jobs.slice(0, 15).map((j) => `<tr><td>${j.id}</td><td>${esc(j.pickup.area)} to ${esc(j.drop.area)}</td><td>${money(j.agreedPrice || j.openingPrice)}</td><td>${STATUS[j.status]}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No deliveries yet.</td></tr>'}</table></div></div></div>
+    <div class="cols"><div><p class="h3">Couriers</p><div class="tbl-wrap"><table class="tbl"><tr><th>Courier</th><th>Status</th><th>Trips</th><th>Paid us</th><th></th></tr>
+      ${data.drivers.map((d) => `<tr><td><b>${esc(d.name)}</b><br><small class="muted">${esc(d.phone)}, ${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></td><td>${esc(d.status)}</td><td>${d.completed}</td><td>${money(d.earnings.commission)}</td><td>${reset(d)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No couriers yet.</td></tr>'}</table></div></div>
+    <div><p class="h3">Senders</p><div class="tbl-wrap"><table class="tbl"><tr><th>Sender</th><th>Deliveries</th><th></th></tr>
+      ${data.senders.map((u) => `<tr><td><b>${esc(u.name)}</b><br><small class="muted">${esc(u.phone)}</small></td><td>${u.jobs}</td><td>${reset(u)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No senders yet.</td></tr>'}</table></div></div></div>
+    <p class="h3">Recent deliveries</p><div class="tbl-wrap"><table class="tbl"><tr><th>#</th><th>Route</th><th>Distance</th><th>Price</th><th>Status</th></tr>
+      ${data.jobs.slice(0, 15).map((j) => `<tr><td>${j.id}</td><td>${esc(j.pickup.label)} to ${esc(j.drop.label)}</td><td>${j.km} km</td><td>${money(j.agreedPrice || j.openingPrice)}</td><td>${STATUS[j.status]}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No deliveries yet.</td></tr>'}</table></div>
     <p class="h3">Commission ledger</p><div class="tbl-wrap"><table class="tbl"><tr><th>Date</th><th>Courier</th><th>Amount</th></tr>
       ${data.ledger.map((l) => `<tr><td>${dayLabel(l.date)}</td><td>${esc(data.drivers.find((d) => d.id === l.driverId)?.name || l.driverId)}</td><td>${money(l.amount)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing collected yet.</td></tr>'}</table></div></div>`;
 }
@@ -466,16 +646,18 @@ const TABS = {
 };
 
 function currentView() {
-  if (!me.role) return { html: vWelcome(), bare: true, tabs: false };
+  if (!me) {
+    if (ui.admin) return { html: vAdminLogin(), tabs: false };
+    if (ui.auth) return { html: vAuth(), tabs: false };
+    return { html: vWelcome(), bare: true, tabs: false };
+  }
   if (me.role === 'admin') return { html: vAdmin(), tabs: false, wide: true };
   const n = nav.cur.name;
   if (me.role === 'sender') {
-    if (!me.name) return { html: vSenderSetup(), tabs: false };
     if (n === 'new') return { html: vSNew(), tabs: false };
     const f = { home: vSHome, jobs: vSJobs, job: vSJob, profile: vProfile }[n] || vSHome;
     return { html: f(), tabs: true };
   }
-  if (!me.driverId) return { html: vDriverPick(), tabs: false };
   if (!data) return { html: '<p class="empty">Loading...</p>', tabs: true };
   const f = { home: vDHome, job: vDJob, earnings: vDEarn, bookings: vDBook, profile: vProfile }[n] || vDHome;
   return { html: f(), tabs: true };
@@ -487,6 +669,7 @@ function render(reset) {
   const bind = a && a.dataset && a.dataset.bind;
   const pos = bind && a.selectionStart;
   const scr = $('#screen'), top = scr.scrollTop;
+  destroyMaps();
   const v = currentView();
   scr.innerHTML = v.html;
   scr.classList.toggle('bare', !!v.bare);
@@ -497,7 +680,8 @@ function render(reset) {
     const cur = nav.cur.name === 'job' ? (me.role === 'sender' ? 'jobs' : 'home') : nav.cur.name;
     tabs.innerHTML = TABS[me.role].map(([id, label, icon]) => `<button data-act="tab" data-tab="${id}" ${cur === id ? 'aria-current="page"' : ''}>${ic(icon)}${label}</button>`).join('');
   }
-  if (reset) scr.scrollTop = 0; else scr.scrollTop = top;
+  scr.scrollTop = reset ? 0 : top;
+  mountMaps();
   if (bind && !reset) {
     const el = scr.querySelector(`[data-bind="${CSS.escape(bind)}"]`);
     if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { /* not a text input */ } }
@@ -505,104 +689,112 @@ function render(reset) {
 }
 
 // ---------- Data loading ----------
-async function pull() {
+function signedOut(msg) {
+  me = null; data = null; dsig = ''; closeSheet();
+  nav = { stack: [], cur: { name: 'home' } };
+  if (msg) toast(msg, true);
+  render(true);
+}
+async function pull(fresh) {
+  if (!me) return;
+  const q = fresh ? '?fresh=1' : '';
   try {
-    let next = null;
-    if (me.role === 'sender' && me.senderId) next = await call(`sender/${me.senderId}/jobs`);
-    else if (me.role === 'driver' && me.driverId) next = await call(`driver/${me.driverId}`);
-    else if (me.role === 'admin' && (!meta.adminPinRequired || ui.pin)) next = await call('admin', undefined, { 'x-admin-pin': ui.pin });
+    const next = me.role === 'sender' ? await call('sender/jobs' + q) : me.role === 'driver' ? await call('driver/feed' + q) : await call('admin' + q);
     $('#offline').hidden = true;
     const s = JSON.stringify(next);
     if (s !== dsig) { data = next; dsig = s; render(); }
   } catch (e) {
-    if (e.status === 401) { ui.pin = ''; ui.pinBad = true; data = null; dsig = ''; render(); return; }
-    if (e.status === 404 && me.role === 'driver') { me.driverId = ''; persistMe(); render(true); return; }
-    if (!navigator.onLine || e instanceof TypeError) $('#offline').hidden = false;
+    if (e.status === 401) return signedOut('You were signed out. Please log in again.');
+    if (e.status === 0 || !navigator.onLine) $('#offline').hidden = false;
   }
 }
-const refresh = async () => { dsig = ''; await pull(); };
 async function run(fn, okMsg) {
-  try { await fn(); if (okMsg) toast(okMsg); await refresh(); } catch (e) { toast(e.message, true); await refresh(); }
+  try { await fn(); if (okMsg) toast(okMsg); } catch (e) { toast(e.message, true); }
+  dsig = ''; await pull(true);
+}
+async function startSession(user) {
+  me = user; data = null; dsig = ''; ui.auth = null; ui.admin = null;
+  nav = { stack: [], cur: { name: 'home' } };
+  render(true);
+  await pull(true);
 }
 
 // ---------- Actions ----------
-const sBody = (extra) => ({ senderId: me.senderId, ...extra });
-const dBody = (extra) => ({ driverId: me.driverId, ...extra });
-
 const ACT = {
-  role: ({ role }) => {
-    if (role === 'admin') { me.role = 'admin'; data = null; dsig = ''; ui.pin = ''; ui.pinBad = false; render(true); return; }
-    me.role = role; if (role === 'sender' && !me.senderId) me.senderId = genId();
-    persistMe(); data = null; dsig = ''; nav = { stack: [], cur: { name: 'home' } };
-    if (role === 'driver' && !me.driverId) loadDrivers();
-    render(true); pull();
-  },
-  leave: () => { me.role = ''; if (store.get('role') !== '') store.set('role', ''); data = null; dsig = ''; render(true); },
+  'auth-start': ({ role }) => { ui.auth = { role, mode: 'login', phone: ls.get('phone'), password: '', name: '', vehicle: 'bike', plate: '', show: false, error: '', busy: false }; render(true); },
+  'auth-back': () => { ui.auth = null; render(true); },
+  'auth-mode': ({ mode }) => { ui.auth.mode = mode; ui.auth.error = ''; render(); },
+  'auth-veh': ({ v }) => { ui.auth.vehicle = v; render(); },
+  'toggle-pw': () => { ui.auth.show = !ui.auth.show; render(); },
+  'admin-start': () => { ui.admin = { pin: '', error: '' }; render(true); },
+  'admin-back': () => { ui.admin = null; render(true); },
+  logout: async () => { try { await call('auth/logout', {}); } catch { /* signing out locally anyway */ } signedOut(); },
   tab: ({ tab: t }) => tab(t),
   back: () => back(),
   'open-job': ({ id }) => go('job', { id }),
-  'start-new': ({ type }) => { ui.draft = defaultDraft(type); ui.step = 1; ui.error = ''; go('new'); },
-  veh: ({ v }) => { ui.draft.vehicle = v; render(); },
-  'reg-veh': ({ v }) => { ui.reg.vehicle = v; render(); },
-  'toggle-reg': () => { ui.showReg = !ui.showReg; render(); },
-  'new-back': () => { ui.error = ''; if (ui.step > 1) { ui.step -= 1; render(true); } else back(); },
-  'new-next': async () => {
+  'start-new': ({ type }) => { ui.draft = defaultDraft(type); ui.step = 1; ui.error = ''; ui.est = null; ui.route = null; go('new'); },
+  veh: ({ v }) => { ui.draft.vehicle = v; render(); updateEstimate(); },
+  'open-sheet': ({ kind }) => openSheet(kind),
+  'sheet-close': () => closeSheet(),
+  'sheet-search': () => { ui.sh.mode = 'search'; drawSheet(); },
+  'sheet-map': () => { ui.sh.mode = 'map'; drawSheet(); },
+  'sheet-gps': () => useGps(),
+  'sheet-area': ({ name }) => { ui.sh.q = name; ui.sh.msg = 'Searching...'; ui.sh.results = []; $('#sheet input').value = name; renderResults(); runSearch(name, `${name}, Port Harcourt`); },
+  'sheet-pick': ({ i }) => { const r = ui.sh.results[Number(i)]; if (r) setPoint(ui.sh.kind, r); },
+  'sheet-confirm': () => {
+    const c = sheetMap.getCenter(), sh = ui.sh;
+    if (!inService(c.lat, c.lng)) return toast('That spot is outside our Port Harcourt service area.', true);
+    setPoint(sh.kind, { lat: c.lat, lng: c.lng, label: sh.label || 'Pinned location', address: sh.address || '' });
+  },
+  'new-back': () => { ui.error = ''; if (ui.step > 1) { ui.step -= 1; render(true); } else { ui.draft = null; back(); } },
+  'new-next': () => {
     const d = ui.draft; ui.error = '';
     if (ui.step === 1) {
-      if (!d.pickupAddress.trim() || !d.dropAddress.trim()) ui.error = 'Enter both the pickup and delivery address.';
+      if (!d.pickup || !d.drop) ui.error = 'Choose both the pickup and the delivery location.';
+      else if (!ui.est) ui.error = ui.route?.status === 'loading' ? 'Hold on, we are still measuring the route.' : (ui.error || 'We could not price this trip. Try again.');
       else if (d.type === 'scheduled' && !(new Date(d.scheduledAt) > new Date())) ui.error = 'Choose a pickup time in the future.';
     } else if (ui.step === 2) {
       if (!d.itemType) ui.error = 'Choose what you are sending.';
       else if (!d.recipientName.trim()) ui.error = 'Enter the recipient name.';
       else if (!/^[+\d][\d\s-]{6,18}$/.test(d.recipientPhone.trim())) ui.error = 'Enter a valid recipient phone number.';
     }
-    if (!ui.error && ui.step === 2) {
-      try {
-        ui.est = await call('estimate', { pickupAreaId: d.pickupAreaId, dropAreaId: d.dropAreaId, vehicle: d.vehicle });
-        if (!d.priceTouched || !d.price) d.price = ui.est.fare;
-      } catch (e) { ui.error = e.message; }
-    }
     if (!ui.error) ui.step += 1;
     render(true);
   },
   'post-job': () => run(async () => {
-    const d = ui.draft;
+    const d = ui.draft, r = ui.route;
     const job = await call('jobs', {
-      senderId: me.senderId, senderName: me.name, senderPhone: me.phone, deliveryType: d.type,
-      scheduledAt: d.type === 'scheduled' && d.scheduledAt ? new Date(d.scheduledAt).toISOString() : undefined,
-      pickupAreaId: d.pickupAreaId, pickupAddress: d.pickupAddress, dropAreaId: d.dropAreaId, dropAddress: d.dropAddress,
+      deliveryType: d.type, scheduledAt: d.type === 'scheduled' && d.scheduledAt ? new Date(d.scheduledAt).toISOString() : undefined,
+      pickup: d.pickup, drop: d.drop, routeKm: r?.status === 'ok' ? r.km : undefined, routeGeo: r?.status === 'ok' ? r.geo : undefined,
       vehicle: d.vehicle, itemType: d.itemType, quantity: d.quantity, note: d.note, recipientName: d.recipientName,
       recipientPhone: d.recipientPhone, payer: d.payer, payment: d.payment, openingPrice: d.price,
     });
-    ui.draft = null; nav = { stack: [{ name: 'jobs' }], cur: { name: 'job', id: job.id } };
+    ui.draft = null; ui.route = null; ui.est = null;
+    nav = { stack: [{ name: 'jobs' }], cur: { name: 'job', id: job.id } };
     toast('Request posted. Couriers can now make offers.');
   }),
   step: ({ path, d }, el) => {
-    // Start from the number the person actually sees in the field (it may be an unsaved default).
     const shown = Number(String(el.parentElement.querySelector('input').value).replace(/\D/g, ''));
-    const cur = shown || Number(getPath(path)) || 0;
-    setPath(path, Math.max(100, cur + Number(d)));
+    setPath(path, Math.max(100, (shown || Number(getPath(path)) || 0) + Number(d)));
     if (path === 'draft.price') ui.draft.priceTouched = true;
     render();
   },
   'toggle-counter': ({ key, price }) => { ui.open[key] = !ui.open[key]; if (ui.counter[key] == null) ui.counter[key] = Number(price); render(); },
-  's-accept': ({ id, driver }) => run(() => call(`jobs/${id}/sender/accept`, sBody({ driverId: driver }))),
-  's-decline': ({ id, driver }) => run(() => call(`jobs/${id}/sender/decline`, sBody({ driverId: driver }))),
-  's-counter': ({ id, driver, key }) => run(async () => { await call(`jobs/${id}/sender/counter`, sBody({ driverId: driver, price: ui.counter[key] })); ui.open[key] = false; delete ui.counter[key]; }, 'Counter-offer sent.'),
-  's-cancel': ({ id }) => { if (confirm('Cancel this delivery?')) run(() => call(`jobs/${id}/cancel`, sBody({})), 'Delivery cancelled.'); },
-  rate: ({ id, n }) => run(() => call(`jobs/${id}/rate`, sBody({ rating: Number(n) })), 'Thanks for rating.'),
-  'toggle-online': (_, el) => run(() => call(`drivers/${me.driverId}/status`, { status: el.checked ? 'online' : 'offline' })),
-  'd-accept': ({ id }) => run(() => call(`jobs/${id}/driver/accept`, dBody({})), 'Deal sealed.'),
-  'd-reject': ({ id }) => run(async () => { await call(`jobs/${id}/driver/reject`, dBody({})); if (nav.cur.name === 'job') back(); }),
-  'd-counter': ({ id, key }) => run(async () => { await call(`jobs/${id}/driver/counter`, dBody({ price: ui.counter[key] })); delete ui.counter[key]; }, 'Counter-offer sent.'),
-  'd-pickup': ({ id }) => run(() => call(`jobs/${id}/driver/pickup`, dBody({})), 'Marked as picked up.'),
-  'd-deliver': ({ id }) => run(() => call(`jobs/${id}/driver/deliver`, dBody({})), 'Delivery complete.'),
-  'd-withdraw': ({ id }) => { if (confirm('Pull out? The delivery goes back to other couriers.')) run(async () => { await call(`jobs/${id}/driver/withdraw`, dBody({})); back(); }); },
-  'pick-driver': ({ id }) => { me.driverId = id; persistMe(); nav = { stack: [], cur: { name: 'home' } }; data = null; dsig = ''; render(true); pull(); },
+  's-accept': ({ id, driver }) => run(() => call(`jobs/${id}/sender/accept`, { driverId: driver })),
+  's-decline': ({ id, driver }) => run(() => call(`jobs/${id}/sender/decline`, { driverId: driver })),
+  's-counter': ({ id, driver, key }) => run(async () => { await call(`jobs/${id}/sender/counter`, { driverId: driver, price: ui.counter[key] }); ui.open[key] = false; delete ui.counter[key]; }, 'Counter-offer sent.'),
+  's-cancel': ({ id }) => { if (confirm('Cancel this delivery?')) run(() => call(`jobs/${id}/cancel`, {}), 'Delivery cancelled.'); },
+  rate: ({ id, n }) => run(() => call(`jobs/${id}/rate`, { rating: Number(n) }), 'Thanks for rating.'),
+  'toggle-online': (_, el) => run(() => call('driver/status', { status: el.checked ? 'online' : 'offline' })),
+  'd-accept': ({ id }) => run(() => call(`jobs/${id}/driver/accept`, {}), 'Deal sealed.'),
+  'd-reject': ({ id }) => run(async () => { await call(`jobs/${id}/driver/reject`, {}); if (nav.cur.name === 'job') back(); }),
+  'd-counter': ({ id, key }) => run(async () => { await call(`jobs/${id}/driver/counter`, { price: ui.counter[key] }); delete ui.counter[key]; }, 'Counter-offer sent.'),
+  'd-pickup': ({ id }) => run(() => call(`jobs/${id}/driver/pickup`, {}), 'Marked as picked up.'),
+  'd-deliver': ({ id }) => run(() => call(`jobs/${id}/driver/deliver`, {}), 'Delivery complete.'),
+  'd-withdraw': ({ id }) => { if (confirm('Pull out? The delivery goes back to other couriers.')) run(async () => { await call(`jobs/${id}/driver/withdraw`, {}); back(); }); },
+  'admin-reset': ({ id, name }) => { if (confirm(`Reset the password for ${name}? Their current sessions will end.`)) run(async () => { const r = await call(`admin/users/${id}/reset`, {}); ui.tempPw = { name: r.name, phone: r.phone, password: r.tempPassword }; }); },
   install: async () => { if (!installEvent) return; installEvent.prompt(); await installEvent.userChoice; installEvent = null; render(); },
 };
-
-async function loadDrivers() { try { ui.drivers = (await call('drivers')).drivers; render(); } catch { /* retried on next visit */ } }
 
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
@@ -613,6 +805,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => { if (e.target.dataset?.act === 'toggle-online') ACT['toggle-online'](e.target.dataset, e.target); });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.matches('[role="link"][data-act]')) { e.preventDefault(); e.target.click(); }
+  if (e.key === 'Escape' && ui.sh) closeSheet();
 });
 document.addEventListener('input', (e) => {
   const t = e.target, path = t.dataset?.bind;
@@ -620,50 +813,67 @@ document.addEventListener('input', (e) => {
   if (t.type === 'radio' && !t.checked) return;
   setPath(path, t.dataset.num ? Number(String(t.value).replace(/\D/g, '')) : t.value);
   if (path === 'draft.price') ui.draft.priceTouched = true;
+  if (t.dataset.search) scheduleSearch();
 });
+
+async function submitAuth() {
+  const a = ui.auth, reg = a.mode === 'register';
+  a.error = '';
+  if (reg && !(a.name || '').trim()) a.error = 'Enter your full name.';
+  else if (!(a.phone || '').trim()) a.error = 'Enter your phone number.';
+  else if (!a.password) a.error = 'Enter your password.';
+  else if (reg && a.password.length < 8) a.error = 'Password must be at least 8 characters.';
+  else if (reg && a.role === 'driver' && !(a.plate || '').trim()) a.error = 'Enter your vehicle plate number.';
+  if (a.error) return render();
+  a.busy = true; render();
+  try {
+    const body = { role: a.role, phone: a.phone, password: a.password };
+    if (reg) body.name = a.name;
+    if (reg && a.role === 'driver') { body.vehicle = a.vehicle || 'bike'; body.plate = a.plate; }
+    const r = await call(reg ? 'auth/register' : 'auth/login', body);
+    ls.set('phone', a.phone);
+    await startSession(r.user);
+    if (reg && r.user.role === 'driver') toast('Welcome! Switch on Online to see requests.');
+  } catch (e) { a.busy = false; a.error = e.message; a.password = ''; render(); }
+}
+
 document.addEventListener('submit', (e) => {
   const f = e.target.dataset?.form;
   if (!f) return;
   e.preventDefault();
-  if (f === 'setup') {
-    me.name = (ui.prof.name ?? me.name).trim(); me.phone = (ui.prof.phone ?? me.phone).trim();
-    if (!me.name) return toast('Enter your name.', true);
-    persistMe(); render(true);
-  } else if (f === 'register') {
-    const r = ui.reg;
-    run(async () => {
-      const d = await call('drivers', { name: r.name, phone: r.phone, vehicle: r.vehicle || 'bike', plate: r.plate });
-      ui.reg = {}; ui.showReg = false; me.driverId = d.id; persistMe(); nav = { stack: [], cur: { name: 'home' } };
-      toast('Registered. Switch on Online to see requests.');
-    });
-  } else if (f === 'admin-login') {
-    ui.pin = ui.pinf?.pin || ''; ui.pinBad = false; refresh();
-  } else if (f === 'admin-save') {
-    run(async () => { await call('admin/settings', { commissionPerDay: ui.adm?.commission ?? data.settings.commissionPerDay }, { 'x-admin-pin': ui.pin }); ui.adm = {}; }, 'Commission updated.');
+  if (f === 'auth') submitAuth();
+  else if (f === 'admin-login') {
+    (async () => {
+      try { const r = await call('auth/admin', { pin: ui.admin.pin }); await startSession(r.user); }
+      catch (err) { ui.admin.error = err.message; ui.admin.pin = ''; render(); }
+    })();
+  } else if (f === 'admin-save') run(async () => { await call('admin/settings', { commissionPerDay: ui.adm.commission ?? data.settings.commissionPerDay }); ui.adm = {}; }, 'Commission updated.');
+  else if (f === 'pw') {
+    (async () => {
+      ui.pw.error = '';
+      try { await call('me/password', { current: ui.pw.current || '', next: ui.pw.next || '' }); ui.pw = {}; toast('Password changed. Other devices were signed out.'); }
+      catch (err) { ui.pw.error = err.message; }
+      render();
+    })();
   }
 });
 
 // ---------- PWA ----------
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; render(); });
 window.addEventListener('appinstalled', () => { installEvent = null; toast('Bargo installed.'); render(); });
-window.addEventListener('online', () => { $('#offline').hidden = true; pull(); });
+window.addEventListener('online', () => { $('#offline').hidden = true; pull(true); });
 window.addEventListener('offline', () => { $('#offline').hidden = false; });
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 
 // ---------- Start ----------
 (async function init() {
-  try {
-    meta = await call('meta');
-  } catch {
+  try { meta = await call('meta'); } catch {
     $('#screen').innerHTML = '<p class="empty">Cannot reach the server. Check your connection and reload.</p>';
     return;
   }
-  const want = new URLSearchParams(location.search).get('role');
-  if (!me.role && (want === 'sender' || want === 'driver')) ACT.role({ role: want });
-  if (me.role === 'admin') me.role = '';
-  if (me.role === 'driver' && !me.driverId) loadDrivers();
+  try { me = (await call('me')).user; } catch { me = null; }
   render(true);
-  pull();
-  setInterval(() => { if (!document.hidden) pull(); }, 3000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(); });
+  if (me) pull(true);
+  setInterval(() => { if (!document.hidden) pull(); }, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(true); });
 })();
