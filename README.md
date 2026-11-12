@@ -8,6 +8,15 @@ Book a courier in Port Harcourt, agree the price, get it delivered. An installab
 
 No dependencies. Needs Node 18+.
 
+## Features
+
+- Negotiated price per delivery, deal sealed when both agree; daily commission per courier.
+- Alerts: an Alerts tab with unread badge, sound and vibration while the app is open, and phone push alerts when it is closed (Android Chrome, desktop, and iPhone once added to the Home Screen). Couriers are alerted about new requests for their vehicle; senders about offers, sealed deals, pickup and delivery.
+- Delivery code: the sender gets a 4-digit code to give the recipient (WhatsApp/SMS buttons); the courier must enter it to complete the delivery. Five wrong tries lock guessing for 5 minutes.
+- Live tracking: while a courier has a delivery in progress and the app is open, the sender sees them on the map with an estimated arrival time.
+- In-app chat between sender and courier during a delivery, with quick replies. Navigate buttons open Google Maps for the courier.
+- Recent places in the location picker.
+
 ## Run locally
 
 ```
@@ -32,6 +41,8 @@ Vercel has no permanent disk, so the app must store data in a database or **acco
 Open the Vercel link in **Chrome (Android)** or **Safari (iPhone)**, not inside WhatsApp, Facebook or another in-app browser.
 - Android: menu -> Install app (or the Install button in Bargo's Profile).
 - iPhone: Share -> Add to Home Screen.
+
+If the sign-in screen still says data is not saved after you connected Upstash, open `/api/health` on your site: it lists the database-related setting names the server can see (never their values). Push alerts need no setup: the server makes its own keys and keeps them in the database.
 
 ## Maps
 

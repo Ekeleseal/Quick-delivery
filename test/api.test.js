@@ -238,12 +238,12 @@ test('full delivery: pickup, deliver, rate; commission is charged once per day',
   assert.equal((await act(c, b.id, 'driver', 'accept')).status, 409);
   assert.equal((await act(c, a.id, 'driver', 'deliver')).status, 409);
   assert.equal((await act(c, a.id, 'driver', 'pickup')).json.status, 'picked_up');
-  assert.equal((await act(c, a.id, 'driver', 'deliver')).json.status, 'delivered');
+  assert.equal((await act(c, a.id, 'driver', 'deliver', { code: a.deliveryCode })).json.status, 'delivered');
   let e = (await c.call('driver/feed')).json.earnings;
   assert.deepEqual([e.gross, e.commission, e.net], [8000, 500, 7500]);
   await act(c, b.id, 'driver', 'accept');
   await act(c, b.id, 'driver', 'pickup');
-  await act(c, b.id, 'driver', 'deliver');
+  await act(c, b.id, 'driver', 'deliver', { code: b.deliveryCode });
   e = (await c.call('driver/feed')).json.earnings;
   assert.deepEqual([e.gross, e.commission, e.net, e.commissionDueToday], [11000, 500, 10500, 0]);
   assert.equal((await s.call(`jobs/${a.id}/rate`, { rating: 9 })).status, 400);
@@ -281,7 +281,7 @@ test('admin: PIN login, commission change applies to later days, password reset 
   const j = await post(s, { openingPrice: 2000 });
   await act(c, j.id, 'driver', 'accept');
   await act(c, j.id, 'driver', 'pickup');
-  await act(c, j.id, 'driver', 'deliver');
+  await act(c, j.id, 'driver', 'deliver', { code: j.deliveryCode });
   const e = (await c.call('driver/feed')).json.earnings;
   assert.deepEqual([e.commission, e.net], [750, 1250]);
   await admin.call('admin/settings', { commissionPerDay: 500 });

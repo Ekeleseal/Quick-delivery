@@ -27,6 +27,8 @@ const ICON = {
   phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
   locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
   chevron: '<path d="M9 6l6 6-6 6"/>',
+  bell: '<path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9zM10 20a2 2 0 0 0 4 0"/>',
+  nav: '<path d="M3 11l18-8-8 18-2-8z"/>',
   logout: '<path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M16 8l4 4-4 4M20 12H9"/>',
 };
 const ic = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
@@ -61,7 +63,10 @@ let data = null;   // the signed-in account's live data (deliveries, feed or adm
 let dsig = '';
 let nav = { stack: [], cur: { name: 'home' } };
 let installEvent = null;
-const ui = { auth: null, admin: null, step: 1, draft: null, est: null, route: null, counter: {}, open: {}, seen: new Set(), pw: {}, sh: null, error: '', tempPw: null, adm: {} };
+let pushSt = 'unknown'; // unsupported | needs-install | denied | off | on
+let lastNoteId = null;
+let pendingJob = new URLSearchParams(location.search).get('job');
+const ui = { dc: {}, chat: {}, auth: null, admin: null, step: 1, draft: null, est: null, route: null, counter: {}, open: {}, seen: new Set(), pw: {}, sh: null, error: '', tempPw: null, adm: {} };
 
 const OPEN = ['open', 'agreed', 'picked_up'];
 const STATUS = { open: 'Open', agreed: 'Deal sealed', picked_up: 'On the way', delivered: 'Delivered', cancelled: 'Cancelled' };
@@ -155,19 +160,20 @@ async function fetchRoute(a, b) {
 
 let liveMaps = [];
 function destroyMaps() { liveMaps.forEach((m) => m.destroy()); liveMaps = []; }
-function routeMap(el, pickup, drop, geo) {
+function routeMap(el, pickup, drop, geo, courier) {
   if (!window.TileMap) { el.innerHTML = '<p class="empty">Map unavailable.</p>'; return; }
   const m = new TileMap(el, { interactive: false });
   const line = geo && geo.length > 1 ? geo : [[pickup.lat, pickup.lng], [drop.lat, drop.lng]];
   m.addLine(line, { dashed: !(geo && geo.length > 1) });
   m.addMarker(pickup.lat, pickup.lng, 'pickup', pickup.label);
   m.addMarker(drop.lat, drop.lng, 'drop', drop.label);
-  m.fitBounds([...line, pickup, drop]);
+  if (courier) m.addMarker(courier.lat, courier.lng, 'courier', 'Courier');
+  m.fitBounds([...line, pickup, drop, ...(courier ? [courier] : [])]);
   liveMaps.push(m);
 }
 function mountMaps() {
   $$('#screen .lmap').forEach((el) => {
-    if (el.dataset.kind === 'job') { const j = findJob(el.dataset.id); if (j) routeMap(el, j.pickup, j.drop, j.routeGeo); }
+    if (el.dataset.kind === 'job') { const j = findJob(el.dataset.id); if (j) routeMap(el, j.pickup, j.drop, j.routeGeo, ['agreed', 'picked_up'].includes(j.status) ? j.courierLoc : null); }
     else if (ui.draft && ui.draft.pickup && ui.draft.drop) routeMap(el, ui.draft.pickup, ui.draft.drop, ui.route?.status === 'ok' ? ui.route.geo : null);
   });
 }
@@ -240,7 +246,7 @@ function renderResults() {
   if (!box || !sh) return;
   if (sh.results.length) box.innerHTML = sh.results.map((r, i) => `<button class="pick" data-act="sheet-pick" data-i="${i}">${ic('pin')}<span class="grow"><b>${esc(r.label)}</b><br><small class="muted">${esc(r.address)}</small></span></button>`).join('');
   else if (sh.msg) box.innerHTML = `<p class="skel">${esc(sh.msg)}</p>`;
-  else box.innerHTML = `<p class="h3" style="margin-top:.4rem">Popular areas</p><div class="chips">${meta.areas.map((a) => `<button data-act="sheet-area" data-name="${esc(a)}">${esc(a)}</button>`).join('')}</div>`;
+  else box.innerHTML = (recents().length ? `<p class="h3" style="margin-top:.4rem">Recent</p>${recents().map((r, i) => `<button class="pick" data-act="sheet-recent" data-i="${i}">${ic('clock')}<span class="grow"><b>${esc(r.label)}</b><br><small class="muted">${esc(r.address)}</small></span></button>`).join('')}` : '') + `<p class="h3" style="margin-top:.4rem">Popular areas</p><div class="chips">${meta.areas.map((a) => `<button data-act="sheet-area" data-name="${esc(a)}">${esc(a)}</button>`).join('')}</div>`;
 }
 function scheduleSearch() {
   const sh = ui.sh;
@@ -282,8 +288,10 @@ async function resolveCenter() {
   const l2 = $('#sh-label');
   if (l2) l2.textContent = r.address || r.label;
 }
+const recents = () => { try { return JSON.parse(ls.get('bargo_recent', '[]')).filter((r) => r && Number.isFinite(r.lat)).slice(0, 5); } catch { return []; } };
 function setPoint(kind, pt) {
   ui.draft[kind] = pt;
+  if (pt.label && pt.label !== 'Pinned location') ls.set('bargo_recent', JSON.stringify([pt, ...recents().filter((r) => r.label !== pt.label)].slice(0, 5)));
   closeSheet();
   updateRoute();
 }
@@ -297,6 +305,139 @@ function useGps() {
     const r = await reverseGeocode(lat, lng);
     if (ui.sh === sh) setPoint(sh.kind, { lat, lng, label: r.label, address: r.address });
   }, () => toast('Could not get your location. Allow location access, or search instead.', true), { enableHighAccuracy: true, timeout: 12000 });
+}
+
+// ---------- Alerts, push, tracking, chat ----------
+const ago = (ts) => { const m = Math.round((Date.now() - ts) / 60000); return m < 1 ? 'now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : new Date(ts).toLocaleDateString('en-NG', { day: 'numeric', month: 'short' }); };
+const hav = (a, b) => { const r = (d) => (d * Math.PI) / 180, h = Math.sin(r(b.lat - a.lat) / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(r(b.lng - a.lng) / 2) ** 2; return 12742 * Math.asin(Math.sqrt(h)); };
+const waNum = (p) => { const d = String(p).replace(/\D/g, ''); return d.startsWith('0') ? '234' + d.slice(1) : d; };
+const mapsLink = (pt) => `https://www.google.com/maps/dir/?api=1&destination=${pt.lat},${pt.lng}&travelmode=driving`;
+
+function etaText(j) {
+  const L = j.courierLoc;
+  if (me?.role !== 'sender' || !L || !['agreed', 'picked_up'].includes(j.status) || !j.driver) return '';
+  const km = hav(L, j.status === 'agreed' ? j.pickup : j.drop) * 1.35, min = Math.max(1, Math.round((km / 25) * 60));
+  const age = Math.round((Date.now() - L.at) / 60000);
+  return `<p class="eta"><span class="live"></span><b>${esc(j.driver.name.split(' ')[0])}</b> is about <b>${min} min</b> ${j.status === 'agreed' ? 'from the pickup' : 'from the drop-off'}${age >= 2 ? `<small class="muted"> (last seen ${age} min ago)</small>` : ''}</p>`;
+}
+
+function codePanel(j) {
+  if (!['agreed', 'picked_up'].includes(j.status) || !j.deliveryCode) return '';
+  const msg = `Hello ${j.recipientName}, ${me.name} is sending you a package with Bargo. Give the courier this delivery code when it arrives: ${j.deliveryCode}`;
+  return `<div class="panel code"><p class="sub">Delivery code</p>
+    <div class="pin">${j.deliveryCode.split('').map((c) => `<span>${c}</span>`).join('')}</div>
+    <p class="small">Give this code to ${esc(j.recipientName)}. The courier needs it to complete the delivery, so the package only counts as delivered when the recipient has it.</p>
+    <div class="btns"><a class="btn line sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(j.recipientPhone)}?text=${encodeURIComponent(msg)}">Send on WhatsApp</a><a class="btn line sm" href="sms:${esc(j.recipientPhone)}?body=${encodeURIComponent(msg)}">Send by SMS</a></div></div>`;
+}
+
+function chatPanel(j) {
+  const msgs = j.messages || [], live = ['agreed', 'picked_up'].includes(j.status), mine = me.role === 'sender' ? 'sender' : 'driver';
+  if (!live && !msgs.length) return '';
+  const quick = me.role === 'sender' ? ['Please call me', 'I am at the pickup point', 'Handle with care'] : ['I am on my way', 'I have arrived', 'Please call me'];
+  return `<div class="panel chat"><p class="sub">Messages</p>
+    <div class="msgs" id="msgs">${msgs.length ? msgs.map((m) => `<div class="msg ${m.from === mine ? 'me' : 'them'}">${esc(m.text)}<small>${new Date(m.at).toLocaleTimeString('en-NG', { hour: 'numeric', minute: '2-digit' })}</small></div>`).join('') : '<p class="muted small" style="margin:0">No messages yet. Say hello.</p>'}</div>
+    ${live ? `<div class="chips">${quick.map((q) => `<button type="button" data-act="chat-quick" data-id="${j.id}" data-text="${esc(q)}">${esc(q)}</button>`).join('')}</div>
+    <form class="row" data-form="chat" data-id="${j.id}"><input class="input" maxlength="300" placeholder="Type a message" autocomplete="off" data-bind="chat.t${j.id}" value="${esc(ui.chat['t' + j.id] ?? '')}"><button class="btn sm inline" type="submit" style="width:auto">Send</button></form>` : ''}</div>`;
+}
+
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+async function refreshPushState() {
+  try {
+    if (!pushSupported()) pushSt = /iphone|ipad|ipod/i.test(navigator.userAgent) && !(matchMedia('(display-mode: standalone)').matches || navigator.standalone) ? 'needs-install' : 'unsupported';
+    else if (Notification.permission === 'denied') pushSt = 'denied';
+    else {
+      const reg = await navigator.serviceWorker.ready;
+      pushSt = Notification.permission === 'granted' && (await reg.pushManager.getSubscription()) ? 'on' : 'off';
+    }
+  } catch { pushSt = 'unsupported'; }
+}
+const b64ToBytes = (b) => Uint8Array.from(atob(b.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(b.length / 4) * 4, '=')), (c) => c.charCodeAt(0));
+async function enablePush() {
+  if (!pushSupported()) throw new Error('This browser cannot show alerts when the app is closed.');
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { await refreshPushState(); throw new Error('Alerts are blocked. Allow notifications for Bargo in your browser settings.'); }
+  const { key } = await call('push/key');
+  if (!key) throw new Error('Alerts are not ready yet. Try again in a moment.');
+  const reg = await navigator.serviceWorker.ready;
+  const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) }));
+  await call('me/push', { subscription: sub.toJSON() });
+  await refreshPushState();
+}
+async function syncPush() { // after login: make sure this phone's subscription belongs to this account
+  try {
+    await refreshPushState();
+    if (pushSt !== 'on') return;
+    const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    if (sub) await call('me/push', { subscription: sub.toJSON() });
+  } catch { /* alerts still work inside the app */ }
+}
+async function dropPush() { // before logout: the next person on this phone must not get this account's alerts
+  try {
+    if (!pushSupported()) return;
+    const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    if (sub) await call('me/push/remove', { endpoint: sub.endpoint });
+  } catch { /* ignore */ }
+}
+function pushCard(full) {
+  const st = pushSt;
+  if (st === 'on') return full ? '<p class="notice ok">Phone alerts are on. You will hear about offers and updates even when Bargo is closed.</p>' : '';
+  if (!full && (st !== 'off' || ls.get('bargo_push_dismiss') === '1')) return '';
+  if (st === 'off') return `<div class="panel pushcard">${ic('bell')}<div class="grow"><b>Never miss an offer</b><br><small class="muted">Get an alert on your phone for new requests, offers and deliveries, even when the app is closed.</small></div><div class="stack"><button class="btn sm inline" data-act="push-on">Turn on</button>${full ? '' : '<button class="link" data-act="push-dismiss">Not now</button>'}</div></div>`;
+  if (!full) return '';
+  if (st === 'needs-install') return '<p class="notice">On iPhone, add Bargo to your Home Screen first (Safari: Share, then Add to Home Screen), then open it from there to turn on phone alerts.</p>';
+  if (st === 'denied') return '<p class="notice">Alerts are blocked for Bargo. Allow notifications in your browser or phone settings to turn them on.</p>';
+  return '<p class="notice">This browser cannot send phone alerts. You will still see alerts here when Bargo is open.</p>';
+}
+function vAlerts() {
+  const n = data?.notes || { items: [], unread: 0 };
+  let h = `<div class="row between" style="margin-bottom:.8rem"><h2 class="title">Alerts</h2>${n.unread ? '<button class="link" data-act="mark-read">Mark all read</button>' : ''}</div>${pushCard(true)}`;
+  h += n.items.length ? n.items.map((x) => `<button class="note ${x.read ? '' : 'unread'}" data-act="open-note" data-id="${x.id}" data-job="${x.jobId ?? ''}"><span class="dot"></span><span class="grow"><b>${esc(x.title)}</b><small>${esc(x.body)}</small></span><time>${ago(x.at)}</time></button>`).join('')
+    : empty('bell', 'No alerts yet. Offers, deals and delivery updates show up here.');
+  return h;
+}
+
+let audioCtx = null;
+function chime() {
+  try {
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    const t = audioCtx.currentTime;
+    [660, 880].forEach((f, i) => { const o = audioCtx.createOscillator(), g = audioCtx.createGain(); o.frequency.value = f; o.connect(g); g.connect(audioCtx.destination); g.gain.setValueAtTime(0.0001, t + i * 0.14); g.gain.exponentialRampToValueAtTime(0.18, t + i * 0.14 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.14 + 0.22); o.start(t + i * 0.14); o.stop(t + i * 0.14 + 0.25); });
+  } catch { /* sound is a nicety */ }
+  try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch { /* ignore */ }
+}
+async function markRead(ids) {
+  try { const r = await call('me/notifications', ids ? { ids } : {}); if (data) { data.notes = r; dsig = ''; render(); } } catch { /* try again next time */ }
+}
+function handleNotes(n) {
+  if (!n) return;
+  try { navigator.setAppBadge && (n.unread ? navigator.setAppBadge(n.unread) : navigator.clearAppBadge()); } catch { /* not supported */ }
+  const top = n.items.reduce((m, x) => Math.max(m, x.id), 0);
+  if (lastNoteId === null) { lastNoteId = top; return; }
+  const fresh = n.items.filter((x) => x.id > lastNoteId && !x.read);
+  lastNoteId = Math.max(lastNoteId, top);
+  if (!fresh.length) return;
+  if (nav.cur.name === 'alerts') setTimeout(() => markRead(), 1200);
+  if (document.hidden) {
+    if (pushSt !== 'on' && 'Notification' in window && Notification.permission === 'granted') navigator.serviceWorker?.ready.then((r) => r.showNotification(fresh[0].title, { body: fresh[0].body, tag: 'bargo-' + (fresh[0].jobId ?? fresh[0].type), icon: '/icons/icon-192.png', data: { jobId: fresh[0].jobId } })).catch(() => {});
+    return;
+  }
+  chime();
+  toast(fresh.length > 1 ? `${fresh[0].title} (and ${fresh.length - 1} more)` : `${fresh[0].title}. ${fresh[0].body}`.slice(0, 140));
+}
+
+// Live location: while a courier has a delivery in progress and the app is open, share position with the sender.
+let watchId = null, lastSent = 0, lastPos = null;
+function syncTracking() {
+  const need = me?.role === 'driver' && data?.current?.length && navigator.geolocation;
+  if (need && watchId === null) {
+    watchId = navigator.geolocation.watchPosition((p) => { ui.geoDenied = false; lastPos = p.coords; sendLoc(); }, (e) => { if (e.code === 1 && !ui.geoDenied) { ui.geoDenied = true; render(); } }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  } else if (!need && watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; lastPos = null; }
+  if (need && lastPos) sendLoc();
+}
+function sendLoc() {
+  if (!lastPos || Date.now() - lastSent < 10000) return;
+  lastSent = Date.now();
+  call('driver/location', { lat: lastPos.latitude, lng: lastPos.longitude }).catch(() => {});
 }
 
 // ---------- Views: welcome and accounts ----------
@@ -363,7 +504,7 @@ function vSHome() {
   const jobs = data?.jobs || [];
   const live = jobs.filter((j) => OPEN.includes(j.status));
   const needs = jobs.reduce((s, j) => s + turnCount(j), 0);
-  let h = `<div class="greet"><div><small>Welcome back</small><strong>${esc(me.name)}</strong></div><span class="avatar">${esc(me.name[0] || '?')}</span></div>`;
+  let h = `<div class="greet"><div><small>Welcome back</small><strong>${esc(me.name)}</strong></div><span class="avatar">${esc(me.name[0] || '?')}</span></div>${pushCard(false)}`;
   if (live.length) {
     const j = live[0];
     h += `<article class="banner" role="link" tabindex="0" data-act="open-job" data-id="${j.id}" style="cursor:pointer">
@@ -481,7 +622,7 @@ function progress(j) {
   const at = order.indexOf(j.status);
   return `<div class="progress">${order.map((s, i) => `<div class="${i <= at ? 'done' : ''}"><i></i>${STEP_LABEL[s]}</div>`).join('')}</div>`;
 }
-const jobMap = (j) => `<div class="routebox"><div class="lmap" data-kind="job" data-id="${j.id}" role="img" aria-label="Map from ${esc(j.pickup.label)} to ${esc(j.drop.label)}"></div><p><b>${j.km} km</b> ${j.approxDistance ? '(estimated distance)' : 'by road'}</p></div>`;
+const jobMap = (j) => `<div class="routebox"><div class="lmap" data-kind="job" data-id="${j.id}" role="img" aria-label="Map from ${esc(j.pickup.label)} to ${esc(j.drop.label)}"></div><p><b>${j.km} km</b> ${j.approxDistance ? '(estimated distance)' : 'by road'}</p>${etaText(j)}</div>`;
 const addr = (p) => `${esc(p.label)}${p.address ? `<br><small class="muted">${esc(p.address)}</small>` : ''}`;
 
 function vSJob() {
@@ -504,6 +645,7 @@ function vSJob() {
     h += progress(j);
     h += `<div class="panel"><div class="row"><span class="avatar">${esc(d.name[0])}</span><div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars</small></div>
       <a class="btn sm" style="width:auto;text-decoration:none" href="tel:${esc(d.phone)}" aria-label="Call ${esc(d.name)}">${ic('phone')}</a></div></div>`;
+    h += codePanel(j) + chatPanel(j);
     const sealed = j.negotiations.find((n) => n.status === 'sealed');
     if (sealed) h += `<p class="h3">How you agreed</p>${thread(sealed.history, 'sender')}`;
     if (j.status === 'delivered') {
@@ -531,7 +673,7 @@ function jobCardD(j, actions) {
 function vDHome() {
   const f = data, d = f.driver, on = d.status === 'online';
   let h = `<div class="greet"><div class="row"><span class="avatar">${esc(d.name[0])}</span><div><small>Welcome back</small><strong>${esc(d.name)}</strong></div></div><div class="row"><small class="muted">${on ? 'Online' : 'Offline'}</small>
-    <label class="switch" title="${on ? 'Online' : 'Offline'}"><input type="checkbox" data-act="toggle-online" ${on ? 'checked' : ''} aria-label="Online"><i></i></label></div></div>`;
+    <label class="switch" title="${on ? 'Online' : 'Offline'}"><input type="checkbox" data-act="toggle-online" ${on ? 'checked' : ''} aria-label="Online"><i></i></label></div></div>${pushCard(false)}`;
   if (f.current.length) {
     const j = f.current[0];
     h += `<article class="banner" role="link" tabindex="0" data-act="open-job" data-id="${j.id}" style="cursor:pointer"><small class="muted">You have 1 delivery in progress</small><b>#${j.id} ${esc(j.itemType)}</b>
@@ -559,8 +701,10 @@ function vDJob() {
     h += `<div class="panel"><p class="sub">Contacts</p>
       <div class="row between" style="margin-top:.4rem"><span>Sender: <b>${esc(j.senderName)}</b></span>${j.senderPhone ? `<a class="link" href="tel:${esc(j.senderPhone)}">${esc(j.senderPhone)}</a>` : ''}</div>
       <div class="row between" style="margin-top:.4rem"><span>Recipient: <b>${esc(j.recipientName)}</b></span><a class="link" href="tel:${esc(j.recipientPhone)}">${esc(j.recipientPhone)}</a></div></div>`;
+    if (['agreed', 'picked_up'].includes(j.status)) h += `<a class="btn line" style="text-decoration:none;margin-bottom:.7rem" target="_blank" rel="noopener" href="${mapsLink(j.status === 'agreed' ? j.pickup : j.drop)}">${ic('nav')} Navigate to ${j.status === 'agreed' ? 'pickup' : 'drop-off'}</a>${ui.geoDenied ? '<p class="notice">Turn on location for Bargo so the sender can follow your trip.</p>' : '<p class="small muted" style="margin:-.3rem 0 .7rem">The sender can follow you on the map while this app is open.</p>'}` + chatPanel(j);
     if (j.status === 'agreed') h += `<button class="btn" data-act="d-pickup" data-id="${j.id}">I have picked up the package</button><button class="link" style="margin-top:.7rem" data-act="d-withdraw" data-id="${j.id}">Pull out of this delivery</button>`;
-    if (j.status === 'picked_up') h += `<button class="btn" data-act="d-deliver" data-id="${j.id}">Mark as delivered</button>`;
+    if (j.status === 'picked_up') h += `<form class="panel" data-form="deliver" data-id="${j.id}"><p class="sub" style="margin-bottom:.5rem">Ask ${esc(j.recipientName)} for the 4-digit delivery code</p>
+      <div class="row"><input class="input codein" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" placeholder="0000" aria-label="Delivery code" data-bind="dc.code" value="${esc(ui.dc.code ?? '')}"><button class="btn inline" type="submit" style="width:auto">Complete delivery</button></div></form>`;
     if (j.status !== 'delivered') h += `<p class="sub" style="margin-top:.8rem">${e.commissionDueToday ? `Your daily commission of ${money(e.commissionPerDay)} is charged when you complete your first delivery today.` : 'Your commission for today is already paid. This delivery costs you nothing extra.'}</p>`;
     return h;
   }
@@ -641,8 +785,8 @@ function vAdmin() {
 
 // ---------- Rendering ----------
 const TABS = {
-  sender: [['home', 'Home', 'home'], ['jobs', 'Deliveries', 'list'], ['profile', 'Profile', 'user']],
-  driver: [['home', 'Home', 'home'], ['earnings', 'Earnings', 'wallet'], ['bookings', 'Bookings', 'list'], ['profile', 'Profile', 'user']],
+  sender: [['home', 'Home', 'home'], ['jobs', 'Deliveries', 'list'], ['alerts', 'Alerts', 'bell'], ['profile', 'Profile', 'user']],
+  driver: [['home', 'Home', 'home'], ['earnings', 'Earnings', 'wallet'], ['bookings', 'Bookings', 'list'], ['alerts', 'Alerts', 'bell'], ['profile', 'Profile', 'user']],
 };
 
 function currentView() {
@@ -655,11 +799,11 @@ function currentView() {
   const n = nav.cur.name;
   if (me.role === 'sender') {
     if (n === 'new') return { html: vSNew(), tabs: false };
-    const f = { home: vSHome, jobs: vSJobs, job: vSJob, profile: vProfile }[n] || vSHome;
+    const f = { home: vSHome, jobs: vSJobs, job: vSJob, alerts: vAlerts, profile: vProfile }[n] || vSHome;
     return { html: f(), tabs: true };
   }
   if (!data) return { html: '<p class="empty">Loading...</p>', tabs: true };
-  const f = { home: vDHome, job: vDJob, earnings: vDEarn, bookings: vDBook, profile: vProfile }[n] || vDHome;
+  const f = { home: vDHome, job: vDJob, earnings: vDEarn, bookings: vDBook, alerts: vAlerts, profile: vProfile }[n] || vDHome;
   return { html: f(), tabs: true };
 }
 
@@ -678,10 +822,12 @@ function render(reset) {
   tabs.hidden = !v.tabs;
   if (v.tabs) {
     const cur = nav.cur.name === 'job' ? (me.role === 'sender' ? 'jobs' : 'home') : nav.cur.name;
-    tabs.innerHTML = TABS[me.role].map(([id, label, icon]) => `<button data-act="tab" data-tab="${id}" ${cur === id ? 'aria-current="page"' : ''}>${ic(icon)}${label}</button>`).join('');
+    const unread = data?.notes?.unread || 0;
+    tabs.innerHTML = TABS[me.role].map(([id, label, icon]) => `<button data-act="tab" data-tab="${id}" ${cur === id ? 'aria-current="page"' : ''}>${ic(icon)}${id === 'alerts' && unread ? `<i class="tb" aria-label="${unread} unread">${unread > 9 ? '9+' : unread}</i>` : ''}${label}</button>`).join('');
   }
   scr.scrollTop = reset ? 0 : top;
   mountMaps();
+  const msgs = $('#msgs'); if (msgs) msgs.scrollTop = msgs.scrollHeight;
   if (bind && !reset) {
     const el = scr.querySelector(`[data-bind="${CSS.escape(bind)}"]`);
     if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { /* not a text input */ } }
@@ -690,7 +836,7 @@ function render(reset) {
 
 // ---------- Data loading ----------
 function signedOut(msg) {
-  me = null; data = null; dsig = ''; closeSheet();
+  me = null; data = null; dsig = ''; lastNoteId = null; syncTracking(); try { navigator.clearAppBadge && navigator.clearAppBadge(); } catch { /* ignore */ } closeSheet();
   nav = { stack: [], cur: { name: 'home' } };
   if (msg) toast(msg, true);
   render(true);
@@ -701,8 +847,11 @@ async function pull(fresh) {
   try {
     const next = me.role === 'sender' ? await call('sender/jobs' + q) : me.role === 'driver' ? await call('driver/feed' + q) : await call('admin' + q);
     $('#offline').hidden = true;
+    handleNotes(next.notes);
     const s = JSON.stringify(next);
     if (s !== dsig) { data = next; dsig = s; render(); }
+    syncTracking();
+    if (pendingJob && me.role !== 'admin') { const id = pendingJob; pendingJob = null; if (findJob(id)) go('job', { id }); }
   } catch (e) {
     if (e.status === 401) return signedOut('You were signed out. Please log in again.');
     if (e.status === 0 || !navigator.onLine) $('#offline').hidden = false;
@@ -713,10 +862,11 @@ async function run(fn, okMsg) {
   dsig = ''; await pull(true);
 }
 async function startSession(user) {
-  me = user; data = null; dsig = ''; ui.auth = null; ui.admin = null;
+  me = user; data = null; dsig = ''; lastNoteId = null; ui.auth = null; ui.admin = null;
   nav = { stack: [], cur: { name: 'home' } };
   render(true);
   await pull(true);
+  if (user.role !== 'admin') syncPush();
 }
 
 // ---------- Actions ----------
@@ -728,8 +878,13 @@ const ACT = {
   'toggle-pw': () => { ui.auth.show = !ui.auth.show; render(); },
   'admin-start': () => { ui.admin = { pin: '', error: '' }; render(true); },
   'admin-back': () => { ui.admin = null; render(true); },
-  logout: async () => { try { await call('auth/logout', {}); } catch { /* signing out locally anyway */ } signedOut(); },
-  tab: ({ tab: t }) => tab(t),
+  logout: async () => { if (me && me.role !== 'admin') await dropPush(); try { await call('auth/logout', {}); } catch { /* signing out locally anyway */ } signedOut(); },
+  tab: ({ tab: t }) => { tab(t); if (t === 'alerts' && data?.notes?.unread) setTimeout(() => nav.cur.name === 'alerts' && markRead(), 1500); },
+  'mark-read': () => markRead(),
+  'open-note': ({ id, job }) => { markRead([Number(id)]); if (job) go('job', { id: job }); },
+  'push-on': async () => { try { await enablePush(); toast('Phone alerts are on.'); } catch (e) { toast(e.message, true); } render(); },
+  'push-dismiss': () => { ls.set('bargo_push_dismiss', '1'); render(); },
+  'chat-quick': ({ id, text }) => sendChat(id, text),
   back: () => back(),
   'open-job': ({ id }) => go('job', { id }),
   'start-new': ({ type }) => { ui.draft = defaultDraft(type); ui.step = 1; ui.error = ''; ui.est = null; ui.route = null; go('new'); },
@@ -740,6 +895,7 @@ const ACT = {
   'sheet-map': () => { ui.sh.mode = 'map'; drawSheet(); },
   'sheet-gps': () => useGps(),
   'sheet-area': ({ name }) => { ui.sh.q = name; ui.sh.msg = 'Searching...'; ui.sh.results = []; $('#sheet input').value = name; renderResults(); runSearch(name, `${name}, Port Harcourt`); },
+  'sheet-recent': ({ i }) => { const r = recents()[Number(i)]; if (r && inService(r.lat, r.lng)) setPoint(ui.sh.kind, r); },
   'sheet-pick': ({ i }) => { const r = ui.sh.results[Number(i)]; if (r) setPoint(ui.sh.kind, r); },
   'sheet-confirm': () => {
     const c = sheetMap.getCenter(), sh = ui.sh;
@@ -790,7 +946,6 @@ const ACT = {
   'd-reject': ({ id }) => run(async () => { await call(`jobs/${id}/driver/reject`, {}); if (nav.cur.name === 'job') back(); }),
   'd-counter': ({ id, key }) => run(async () => { await call(`jobs/${id}/driver/counter`, { price: ui.counter[key] }); delete ui.counter[key]; }, 'Counter-offer sent.'),
   'd-pickup': ({ id }) => run(() => call(`jobs/${id}/driver/pickup`, {}), 'Marked as picked up.'),
-  'd-deliver': ({ id }) => run(() => call(`jobs/${id}/driver/deliver`, {}), 'Delivery complete.'),
   'd-withdraw': ({ id }) => { if (confirm('Pull out? The delivery goes back to other couriers.')) run(async () => { await call(`jobs/${id}/driver/withdraw`, {}); back(); }); },
   'admin-reset': ({ id, name }) => { if (confirm(`Reset the password for ${name}? Their current sessions will end.`)) run(async () => { const r = await call(`admin/users/${id}/reset`, {}); ui.tempPw = { name: r.name, phone: r.phone, password: r.tempPassword }; }); },
   install: async () => { if (!installEvent) return; installEvent.prompt(); await installEvent.userChoice; installEvent = null; render(); },
@@ -815,6 +970,13 @@ document.addEventListener('input', (e) => {
   if (path === 'draft.price') ui.draft.priceTouched = true;
   if (t.dataset.search) scheduleSearch();
 });
+
+function sendChat(id, text) {
+  text = String(text || '').trim();
+  if (!text) return;
+  delete ui.chat['t' + id];
+  run(() => call(`jobs/${id}/messages`, { text }));
+}
 
 async function submitAuth() {
   const a = ui.auth, reg = a.mode === 'register';
@@ -842,6 +1004,8 @@ document.addEventListener('submit', (e) => {
   if (!f) return;
   e.preventDefault();
   if (f === 'auth') submitAuth();
+  else if (f === 'chat') sendChat(e.target.dataset.id, ui.chat['t' + e.target.dataset.id]);
+  else if (f === 'deliver') run(async () => { await call(`jobs/${e.target.dataset.id}/driver/deliver`, { code: ui.dc.code || '' }); ui.dc = {}; }, 'Delivery complete.');
   else if (f === 'admin-login') {
     (async () => {
       try { const r = await call('auth/admin', { pin: ui.admin.pin }); await startSession(r.user); }
@@ -863,7 +1027,12 @@ window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); inst
 window.addEventListener('appinstalled', () => { installEvent = null; toast('Bargo installed.'); render(); });
 window.addEventListener('online', () => { $('#offline').hidden = true; pull(true); });
 window.addEventListener('offline', () => { $('#offline').hidden = false; });
-if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  navigator.serviceWorker.addEventListener('message', (e) => { // tapping a phone alert opens its delivery
+    if (e.data?.type === 'open-job' && e.data.jobId && me && me.role !== 'admin') { if (findJob(e.data.jobId)) go('job', { id: e.data.jobId }); else { pendingJob = e.data.jobId; pull(true); } }
+  });
+}
 
 // ---------- Start ----------
 (async function init() {
@@ -873,7 +1042,8 @@ if ('serviceWorker' in navigator) window.addEventListener('load', () => navigato
   }
   try { me = (await call('me')).user; } catch { me = null; }
   render(true);
-  if (me) pull(true);
+  refreshPushState().then(() => render());
+  if (me) { pull(true); if (me.role !== 'admin') syncPush(); }
   setInterval(() => { if (!document.hidden) pull(); }, 5000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(true); });
 })();
