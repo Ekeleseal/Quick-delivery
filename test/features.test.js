@@ -206,3 +206,49 @@ test('cancelling tells the courier; withdrawing tells the sender; rating tells t
   await s.call(`jobs/${j2.id}/cancel`, {});
   assert.equal((await notes(d)).items[0].type, 'cancelled');
 });
+
+test('in-app calls: ring, answer, end; only the two sides; missed calls and busy lines', async () => {
+  const s = await register('sender', 'Call Sender');
+  const d = await register('driver', 'Call Courier');
+  const stranger = await register('driver', 'Call Stranger');
+  const job = await post(s);
+  const offer = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n';
+  assert.equal((await s.call(`jobs/${job.id}/call`, { action: 'start', sdp: offer })).status, 409, 'no calls before a deal');
+  await act(d, job.id, 'driver', 'accept');
+  assert.equal((await stranger.call(`jobs/${job.id}/call`, { action: 'start', sdp: offer })).status, 403);
+  assert.equal((await s.call(`jobs/${job.id}/call`, { action: 'start', sdp: 'nonsense' })).status, 400);
+  const r = await s.call(`jobs/${job.id}/call`, { action: 'start', sdp: offer });
+  assert.equal(r.status, 200);
+  assert.ok(r.json.ice.length >= 1);
+  assert.equal((await notes(d)).items[0].type, 'call');
+  // the offer text stays out of normal feeds
+  const feed = (await d.call('driver/feed')).json.current[0];
+  assert.equal(feed.call.status, 'ringing');
+  assert.equal(feed.call.offer, undefined);
+  assert.equal((await d.call(`jobs/${job.id}/call`)).json.call.offer, offer);
+  assert.equal((await d.call(`jobs/${job.id}/call`, { action: 'start', sdp: offer })).status, 409, 'busy');
+  assert.equal((await s.call(`jobs/${job.id}/call`, { action: 'answer', sdp: offer })).status, 409, 'cannot answer your own call');
+  const ans = await d.call(`jobs/${job.id}/call`, { action: 'answer', sdp: offer });
+  assert.equal(ans.json.call.status, 'active');
+  assert.equal((await s.call(`jobs/${job.id}/call`)).json.call.answer, offer);
+  await s.call(`jobs/${job.id}/call`, { action: 'end' });
+  assert.equal((await d.call(`jobs/${job.id}/call`)).json.call.status, 'ended');
+  // caller gives up while ringing: the other side gets a missed-call alert
+  await d.call(`jobs/${job.id}/call`, { action: 'start', sdp: offer });
+  await d.call(`jobs/${job.id}/call`, { action: 'end' });
+  assert.equal((await notes(s)).items[0].type, 'missed_call');
+  // a ring nobody answers expires
+  const { mutate } = require('../lib/storage');
+  await d.call(`jobs/${job.id}/call`, { action: 'start', sdp: offer });
+  await mutate(ctx.store, (db) => { db.jobs.find((j) => j.id === job.id).call.at -= 60000; });
+  assert.equal((await s.call(`jobs/${job.id}/call`)).json.call.status, 'ended');
+  assert.equal((await s.call(`jobs/${job.id}/call`, { action: 'start', sdp: offer })).status, 200, 'the line is free again');
+});
+
+test('health check can prove that saving really works', async () => {
+  const r = await fetch(ctx.base + '/api/health?deep=1');
+  const j = await r.json();
+  assert.equal(j.ok, true);
+  assert.equal(j.storage, 'file');
+  assert.equal(typeof j.users, 'number');
+});

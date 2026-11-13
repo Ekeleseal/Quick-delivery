@@ -27,6 +27,7 @@ const ICON = {
   phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
   locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
   chevron: '<path d="M9 6l6 6-6 6"/>',
+  mic: '<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
   bell: '<path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9zM10 20a2 2 0 0 0 4 0"/>',
   nav: '<path d="M3 11l18-8-8 18-2-8z"/>',
   logout: '<path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M16 8l4 4-4 4M20 12H9"/>',
@@ -440,6 +441,129 @@ function sendLoc() {
   call('driver/location', { lat: lastPos.latitude, lng: lastPos.longitude }).catch(() => {});
 }
 
+// ---------- In-app voice calls (WebRTC; the server only passes the connection details) ----------
+let cs = null; // the call on screen: { jobId, dir: 'out' | 'in', status, name, pc, stream, muted, since, poll, ring }
+const callSeen = new Set();
+const jobPartyName = (j) => (me.role === 'sender' ? (j.driver?.name || 'Courier') : (j.senderName || 'Sender')).split(' ')[0];
+const gathered = (pc) => new Promise((res) => {
+  if (pc.iceGatheringState === 'complete') return res();
+  const t = setTimeout(res, 4000);
+  pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); } });
+});
+function callUi() {
+  let el = $('#callui');
+  if (!cs) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.id = 'callui'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Voice call'); document.body.appendChild(el); }
+  const label = { starting: 'Starting...', ringing: 'Calling...', incoming: 'Incoming call', connecting: 'Connecting...', active: '', ended: cs.msg || 'Call ended' }[cs.status];
+  const timer = cs.status === 'active' ? (() => { const sec = Math.floor((Date.now() - cs.since) / 1000); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; })() : '';
+  el.innerHTML = `<div class="callbox"><span class="avatar lg">${esc((cs.name || '?')[0])}</span><h2>${esc(cs.name)}</h2><p id="call-status">${label || timer}</p>
+    <div class="callbtns">${cs.status === 'incoming'
+    ? `<button class="cbtn red" data-act="call-decline" aria-label="Decline">${ic('phone')}</button><button class="cbtn green" data-act="call-answer" aria-label="Answer">${ic('phone')}</button>`
+    : cs.status === 'ended' ? '<button class="cbtn" data-act="call-close">Close</button>'
+      : `<button class="cbtn ${cs.muted ? 'on' : ''}" data-act="call-mute" aria-label="${cs.muted ? 'Unmute' : 'Mute'}">${ic('mic')}</button><button class="cbtn red" data-act="call-hangup" aria-label="Hang up">${ic('phone')}</button>`}</div>
+    ${cs.status === 'ended' || cs.status === 'incoming' ? '' : '<small>Voice call through Bargo. Your phone number stays private.</small>'}</div>`;
+}
+function stopRing() { if (cs?.ring) { clearInterval(cs.ring); cs.ring = null; } }
+function startRing() {
+  stopRing();
+  const beep = () => { chime(); };
+  beep(); cs.ring = setInterval(beep, 2200);
+}
+function cleanupCall(msg) {
+  if (!cs) return;
+  stopRing(); clearInterval(cs.poll); clearInterval(cs.tick);
+  try { cs.pc && cs.pc.close(); } catch { /* already closed */ }
+  try { cs.stream && cs.stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+  const a = $('#remote-audio'); if (a) a.srcObject = null;
+  if (msg) { cs.status = 'ended'; cs.msg = msg; callUi(); const mine = cs; setTimeout(() => { if (cs === mine) { cs = null; callUi(); } }, 2500); } else { cs = null; callUi(); }
+}
+function makePeer(ice, stream) {
+  const pc = new RTCPeerConnection({ iceServers: ice });
+  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+  pc.ontrack = (e) => {
+    let a = $('#remote-audio');
+    if (!a) { a = document.createElement('audio'); a.id = 'remote-audio'; a.autoplay = true; a.setAttribute('playsinline', ''); document.body.appendChild(a); }
+    a.srcObject = e.streams[0]; a.play().catch(() => {});
+  };
+  pc.onconnectionstatechange = () => {
+    if (!cs || cs.pc !== pc) return;
+    if (pc.connectionState === 'connected' && cs.status !== 'active') {
+      cs.status = 'active'; cs.since = Date.now(); callUi();
+      cs.tick = setInterval(() => { const t = $('#call-status'); if (t && cs?.status === 'active') { const sec = Math.floor((Date.now() - cs.since) / 1000); t.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; } }, 1000);
+    }
+    if (pc.connectionState === 'failed') { call(`jobs/${cs.jobId}/call`, { action: 'end' }).catch(() => {}); cleanupCall('The call could not connect. Try again, or call by phone.'); }
+  };
+  return pc;
+}
+async function micStream() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) throw new Error('Calls are not supported on this browser. Use the phone button instead.');
+  try { return await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { throw new Error('Allow microphone access for Bargo to make calls.'); }
+}
+function watchCall() {
+  clearInterval(cs.poll);
+  const mine = cs;
+  cs.poll = setInterval(async () => {
+    if (cs !== mine) return;
+    try {
+      const { call: c } = await call(`jobs/${mine.jobId}/call?fresh=1`);
+      if (cs !== mine || !c) return;
+      if (c.status === 'ended') { cleanupCall(c.reason === 'declined' ? 'Call declined' : c.reason === 'missed' ? 'No answer' : c.reason === 'cancelled' ? 'Call cancelled' : 'Call ended'); return; }
+      if (mine.dir === 'out' && c.status === 'active' && c.answer && !mine.gotAnswer) {
+        mine.gotAnswer = true; mine.status = 'connecting'; callUi();
+        await mine.pc.setRemoteDescription({ type: 'answer', sdp: c.answer });
+      }
+    } catch { /* keep trying */ }
+  }, 1200);
+}
+async function startCall(id) {
+  if (cs) return;
+  const j = findJob(id);
+  cs = { jobId: id, dir: 'out', status: 'starting', name: j ? jobPartyName(j) : 'Call', muted: false };
+  const mine = cs; callUi();
+  try {
+    mine.stream = await micStream();
+    const { ice } = await call(`jobs/${id}/call`);
+    mine.pc = makePeer(ice, mine.stream);
+    await mine.pc.setLocalDescription(await mine.pc.createOffer());
+    await gathered(mine.pc);
+    if (cs !== mine) return;
+    await call(`jobs/${id}/call`, { action: 'start', sdp: mine.pc.localDescription.sdp });
+    mine.status = 'ringing'; callUi(); watchCall();
+  } catch (e) { if (cs === mine) cleanupCall(e.message); }
+}
+function checkIncoming() {
+  if (cs || !me || me.role === 'admin' || !data) return;
+  const jobs = me.role === 'sender' ? data.jobs || [] : data.current || [];
+  const j = jobs.find((x) => x.call && x.call.status === 'ringing' && x.call.from !== me.role && Date.now() - x.call.at < 44000 && !callSeen.has(x.id + ':' + x.call.at));
+  if (!j) return;
+  callSeen.add(j.id + ':' + j.call.at);
+  cs = { jobId: j.id, dir: 'in', status: 'incoming', name: jobPartyName(j), muted: false };
+  callUi(); startRing(); watchCall();
+  setTimeout(() => { if (cs && cs.status === 'incoming' && cs.jobId === j.id) cleanupCall('Missed call'); }, 45000);
+}
+async function answerCall() {
+  if (!cs || cs.status !== 'incoming') return;
+  const mine = cs; stopRing(); mine.status = 'connecting'; callUi();
+  try {
+    mine.stream = await micStream();
+    const { call: c, ice } = await call(`jobs/${mine.jobId}/call?fresh=1`);
+    if (!c || c.status !== 'ringing') throw new Error('The caller hung up.');
+    mine.pc = makePeer(ice, mine.stream);
+    await mine.pc.setRemoteDescription({ type: 'offer', sdp: c.offer });
+    await mine.pc.setLocalDescription(await mine.pc.createAnswer());
+    await gathered(mine.pc);
+    await call(`jobs/${mine.jobId}/call`, { action: 'answer', sdp: mine.pc.localDescription.sdp });
+  } catch (e) { if (cs === mine) { call(`jobs/${mine.jobId}/call`, { action: 'end' }).catch(() => {}); cleanupCall(e.message); } }
+}
+async function endCall() {
+  if (!cs) return;
+  const id = cs.jobId;
+  cleanupCall();
+  try { await call(`jobs/${id}/call`, { action: 'end' }); } catch { /* the other side will see it time out */ }
+  pull(true);
+}
+window.bargoCall = () => (cs ? { status: cs.status, conn: cs.pc?.connectionState || null } : null);
+
 // ---------- Views: welcome and accounts ----------
 function vWelcome() {
   const help = installHelp();
@@ -644,7 +768,8 @@ function vSJob() {
     h += sealedBanner(j, j.status === 'delivered' ? 'Delivered. Thank you for using Bargo.' : `You pay ${j.payment === 'cash' ? 'cash' : 'by bank transfer'} to the courier.`);
     h += progress(j);
     h += `<div class="panel"><div class="row"><span class="avatar">${esc(d.name[0])}</span><div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars</small></div>
-      <a class="btn sm" style="width:auto;text-decoration:none" href="tel:${esc(d.phone)}" aria-label="Call ${esc(d.name)}">${ic('phone')}</a></div></div>`;
+      ${['agreed', 'picked_up'].includes(j.status) ? `<button class="btn sm" style="width:auto;margin-right:.4rem" data-act="call-start" data-id="${j.id}" aria-label="Call ${esc(d.name)} in the app">${ic('mic')} Call</button>` : ''}
+      <a class="btn line sm" style="width:auto;text-decoration:none" href="tel:${esc(d.phone)}" aria-label="Call ${esc(d.name)} by phone">${ic('phone')}</a></div></div>`;
     h += codePanel(j) + chatPanel(j);
     const sealed = j.negotiations.find((n) => n.status === 'sealed');
     if (sealed) h += `<p class="h3">How you agreed</p>${thread(sealed.history, 'sender')}`;
@@ -701,7 +826,7 @@ function vDJob() {
     h += `<div class="panel"><p class="sub">Contacts</p>
       <div class="row between" style="margin-top:.4rem"><span>Sender: <b>${esc(j.senderName)}</b></span>${j.senderPhone ? `<a class="link" href="tel:${esc(j.senderPhone)}">${esc(j.senderPhone)}</a>` : ''}</div>
       <div class="row between" style="margin-top:.4rem"><span>Recipient: <b>${esc(j.recipientName)}</b></span><a class="link" href="tel:${esc(j.recipientPhone)}">${esc(j.recipientPhone)}</a></div></div>`;
-    if (['agreed', 'picked_up'].includes(j.status)) h += `<a class="btn line" style="text-decoration:none;margin-bottom:.7rem" target="_blank" rel="noopener" href="${mapsLink(j.status === 'agreed' ? j.pickup : j.drop)}">${ic('nav')} Navigate to ${j.status === 'agreed' ? 'pickup' : 'drop-off'}</a>${ui.geoDenied ? '<p class="notice">Turn on location for Bargo so the sender can follow your trip.</p>' : '<p class="small muted" style="margin:-.3rem 0 .7rem">The sender can follow you on the map while this app is open.</p>'}` + chatPanel(j);
+    if (['agreed', 'picked_up'].includes(j.status)) h += `<button class="btn" style="margin-bottom:.6rem" data-act="call-start" data-id="${j.id}">${ic('mic')} Call ${esc(j.senderName.split(' ')[0])} in the app</button><a class="btn line" style="text-decoration:none;margin-bottom:.7rem" target="_blank" rel="noopener" href="${mapsLink(j.status === 'agreed' ? j.pickup : j.drop)}">${ic('nav')} Navigate to ${j.status === 'agreed' ? 'pickup' : 'drop-off'}</a>${ui.geoDenied ? '<p class="notice">Turn on location for Bargo so the sender can follow your trip.</p>' : '<p class="small muted" style="margin:-.3rem 0 .7rem">The sender can follow you on the map while this app is open.</p>'}` + chatPanel(j);
     if (j.status === 'agreed') h += `<button class="btn" data-act="d-pickup" data-id="${j.id}">I have picked up the package</button><button class="link" style="margin-top:.7rem" data-act="d-withdraw" data-id="${j.id}">Pull out of this delivery</button>`;
     if (j.status === 'picked_up') h += `<form class="panel" data-form="deliver" data-id="${j.id}"><p class="sub" style="margin-bottom:.5rem">Ask ${esc(j.recipientName)} for the 4-digit delivery code</p>
       <div class="row"><input class="input codein" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" placeholder="0000" aria-label="Delivery code" data-bind="dc.code" value="${esc(ui.dc.code ?? '')}"><button class="btn inline" type="submit" style="width:auto">Complete delivery</button></div></form>`;
@@ -836,6 +961,7 @@ function render(reset) {
 
 // ---------- Data loading ----------
 function signedOut(msg) {
+  if (cs) cleanupCall();
   me = null; data = null; dsig = ''; lastNoteId = null; syncTracking(); try { navigator.clearAppBadge && navigator.clearAppBadge(); } catch { /* ignore */ } closeSheet();
   nav = { stack: [], cur: { name: 'home' } };
   if (msg) toast(msg, true);
@@ -851,6 +977,7 @@ async function pull(fresh) {
     const s = JSON.stringify(next);
     if (s !== dsig) { data = next; dsig = s; render(); }
     syncTracking();
+    checkIncoming();
     if (pendingJob && me.role !== 'admin') { const id = pendingJob; pendingJob = null; if (findJob(id)) go('job', { id }); }
   } catch (e) {
     if (e.status === 401) return signedOut('You were signed out. Please log in again.');
@@ -884,6 +1011,12 @@ const ACT = {
   'open-note': ({ id, job }) => { markRead([Number(id)]); if (job) go('job', { id: job }); },
   'push-on': async () => { try { await enablePush(); toast('Phone alerts are on.'); } catch (e) { toast(e.message, true); } render(); },
   'push-dismiss': () => { ls.set('bargo_push_dismiss', '1'); render(); },
+  'call-start': ({ id }) => startCall(id),
+  'call-answer': () => answerCall(),
+  'call-decline': () => endCall(),
+  'call-hangup': () => endCall(),
+  'call-close': () => cleanupCall(),
+  'call-mute': () => { if (!cs?.stream) return; cs.muted = !cs.muted; cs.stream.getAudioTracks().forEach((t) => { t.enabled = !cs.muted; }); callUi(); },
   'chat-quick': ({ id, text }) => sendChat(id, text),
   back: () => back(),
   'open-job': ({ id }) => go('job', { id }),
@@ -1044,6 +1177,11 @@ if ('serviceWorker' in navigator) {
   render(true);
   refreshPushState().then(() => render());
   if (me) { pull(true); if (me.role !== 'admin') syncPush(); }
-  setInterval(() => { if (!document.hidden) pull(); }, 5000);
+  let tick = 0;
+  setInterval(() => { // quicker while a delivery or call is live, relaxed otherwise
+    if (document.hidden) return;
+    const live = cs || data?.current?.length || (data?.jobs || []).some((j) => ['agreed', 'picked_up'].includes(j.status));
+    if (live || tick++ % 2 === 0) pull();
+  }, 2500);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(true); });
 })();

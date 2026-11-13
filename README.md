@@ -16,6 +16,7 @@ No dependencies. Needs Node 18+.
 - Live tracking: while a courier has a delivery in progress and the app is open, the sender sees them on the map with an estimated arrival time.
 - In-app chat between sender and courier during a delivery, with quick replies. Navigate buttons open Google Maps for the courier.
 - Recent places in the location picker.
+- In-app voice calls between sender and courier during a delivery (WebRTC; phone numbers stay private, and the phone button remains as a fallback). Calls ring on the other phone, with a push alert if the app is closed. On some mobile networks a direct connection is impossible; for those, add a relay (TURN) service and set `TURN_URLS` (comma separated), `TURN_USERNAME`, `TURN_CREDENTIAL`.
 
 ## Run locally
 
@@ -42,7 +43,7 @@ Open the Vercel link in **Chrome (Android)** or **Safari (iPhone)**, not inside 
 - Android: menu -> Install app (or the Install button in Bargo's Profile).
 - iPhone: Share -> Add to Home Screen.
 
-If the sign-in screen still says data is not saved after you connected Upstash, open `/api/health` on your site: it lists the database-related setting names the server can see (never their values). Push alerts need no setup: the server makes its own keys and keeps them in the database.
+If the sign-in screen still says data is not saved after you connected Upstash, open `/api/health?deep=1` on your site (it does a real save-and-read test and reports `ok: true` or the exact error): it lists the database-related setting names the server can see (never their values). Push alerts need no setup: the server makes its own keys and keeps them in the database.
 
 ## Maps
 
