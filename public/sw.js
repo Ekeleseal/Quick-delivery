@@ -1,7 +1,7 @@
 // Bargo service worker: keeps the app shell available offline.
 // Network first, so a new deploy is never hidden behind an old cache.
 // API calls and map services are never cached by this worker.
-const VERSION = 'bargo-v4';
+const VERSION = 'bargo-v5';
 const SHELL = ['/', '/style.css', '/app.js', '/tilemap.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (event) => {
@@ -23,15 +23,17 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
+  const shell = req.mode === 'navigate' && url.pathname === '/';
+  if (req.mode === 'navigate' && !shell) return; // other pages (e.g. /track.html) go straight to the network
   if (req.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
   event.respondWith(
     fetch(req).then((res) => {
       if (res.ok) {
         const copy = res.clone();
-        caches.open(VERSION).then((c) => c.put(req.mode === 'navigate' ? '/' : req, copy)).catch(() => {});
+        caches.open(VERSION).then((c) => c.put(shell ? '/' : req, copy)).catch(() => {});
       }
       return res;
-    }).catch(() => caches.match(req.mode === 'navigate' ? '/' : req).then((r) => r || Response.error())),
+    }).catch(() => caches.match(shell ? '/' : req).then((r) => r || Response.error())),
   );
 });
 

@@ -48,7 +48,7 @@ const phone = () => '0803' + String(1000000 + ++counter).slice(-7);
 
 // A 1x1 picture, and the extra fields a courier application needs.
 const PHOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=';
-const APPLY = { photo: PHOTO, area: 'Rumuola, Port Harcourt', idType: 'NIN', idNumber: '12345678901', guarantorName: 'Mama Joy', guarantorPhone: '08031234567' };
+const APPLY = { photo: PHOTO, idPhoto: PHOTO, vehiclePhoto: PHOTO, area: 'Rumuola, Port Harcourt', idType: 'NIN', idNumber: '12345678901', guarantorName: 'Mama Joy', guarantorPhone: '08031234567' };
 const admins = new Map();
 async function adminFor(base, pin = '4321') {
   if (!admins.has(base)) { const a = client(base); const r = await a.call('auth/admin', { pin }); if (r.status !== 200) throw new Error('admin login failed'); admins.set(base, a); }

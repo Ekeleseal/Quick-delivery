@@ -90,17 +90,25 @@ const driverJob = (id) => {
 };
 const findJob = (id) => (me?.role === 'sender' ? senderJob(id) : driverJob(id));
 const avatar = (u, cls = '') => (u && u.photoAt && u.id ? `<img class="avatar ${cls}" alt="" src="/api/photo/${esc(u.id)}?v=${u.photoAt}">` : `<span class="avatar ${cls}">${esc(((u && u.name) || '?')[0])}</span>`);
+const idTypes = () => (meta?.idTypes?.length ? meta.idTypes : ID_TYPES);
+const vehList = () => { const l = ['bike', 'car', 'van'].filter((v) => !(meta?.disabledVehicles || []).includes(v)); return l.length ? l : ['bike', 'car', 'van']; };
 const ID_TYPES = ['NIN', "Driver's licence", "Voter's card", 'International passport'];
-async function readPhoto(file) {
+async function readPhoto(file, doc, cap = 420000, dim = 1000) {
   if (!file || !/^image\//.test(file.type || 'image/')) throw new Error('Choose a picture from your phone or take one.');
   let src;
   try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch {
     src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('That picture could not be opened.')); i.src = URL.createObjectURL(file); });
   }
-  const w = src.width || src.naturalWidth, h = src.height || src.naturalHeight, side = Math.min(w, h), size = 360;
-  const cv = document.createElement('canvas'); cv.width = cv.height = size;
-  cv.getContext('2d').drawImage(src, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
-  for (const q of [0.82, 0.7, 0.55, 0.4]) { const url = cv.toDataURL('image/jpeg', q); if (url.length < 150000) return url; }
+  const w = src.width || src.naturalWidth, h = src.height || src.naturalHeight, cv = document.createElement('canvas');
+  if (doc) { // documents keep their shape and enough detail to be read
+    const k = Math.min(1, dim / Math.max(w, h)); cv.width = Math.max(1, Math.round(w * k)); cv.height = Math.max(1, Math.round(h * k));
+    cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
+    for (const q of [0.82, 0.7, 0.55, 0.4, 0.3]) { const url = cv.toDataURL('image/jpeg', q); if (url.length < cap) return url; }
+  } else {
+    const side = Math.min(w, h), size = 360; cv.width = cv.height = size;
+    cv.getContext('2d').drawImage(src, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
+    for (const q of [0.82, 0.7, 0.55, 0.4]) { const url = cv.toDataURL('image/jpeg', q); if (url.length < 150000) return url; }
+  }
   throw new Error('That picture is too large. Try another one.');
 }
 const photoInput = (kind) => `<input id="photo-${kind}" type="file" accept="image/*" ${kind === 'auth' || kind === 'app' ? 'capture="user"' : ''} hidden data-photo="${kind}">`;
@@ -113,7 +121,7 @@ const inService = (lat, lng) => { const b = meta.bounds; return lat >= b.south &
 const storageWarning = () => (meta?.ephemeral ? '<p class="warn" role="alert">This server is not saving data permanently yet, so accounts and deliveries will disappear. The owner needs to connect a database (see the README).</p>' : '');
 
 function defaultDraft(type) {
-  return { type, pickup: null, drop: null, pickupDetails: '', dropDetails: '', vehicle: 'bike', scheduledAt: '', itemType: '', quantity: 1, note: '', recipientName: '', recipientPhone: '', payer: 'sender', payment: 'cash', price: 0, priceTouched: false };
+  return { type, pickup: null, drop: null, pickupDetails: '', dropDetails: '', vehicle: vehList()[0], scheduledAt: '', itemType: '', quantity: 1, note: '', recipientName: '', recipientPhone: '', payer: 'sender', payment: 'cash', price: 0, priceTouched: false };
 }
 
 const stepper = (path, val, cls = '') => `
@@ -355,13 +363,62 @@ function etaText(j) {
   return `<p class="eta"><span class="live"></span><b>${esc(j.driver.name.split(' ')[0])}</b> is about <b>${min} min</b> ${j.status === 'agreed' ? 'from the pickup' : 'from the drop-off'}${age >= 2 ? `<small class="muted"> (last seen ${age} min ago)</small>` : ''}</p>`;
 }
 
+const trackLink = (j) => `${location.origin}/track.html?t=${encodeURIComponent(j.trackToken || '')}`;
+const copyBtn = (text, label = 'Copy') => `<button type="button" class="link sm" data-act="copy" data-text="${esc(text)}">${label}</button>`;
+function annBanner() {
+  const a = meta?.announcement;
+  if (!a || !a.text) return '';
+  if (!(a.audience === 'all' || (a.audience === 'senders' && me?.role === 'sender') || (a.audience === 'couriers' && me?.role === 'driver'))) return '';
+  if (ls.get('bargo_ann') === a.text) return '';
+  return `<div class="notice ann" role="status"><span>${esc(a.text)}</span><button class="x" data-act="ann-hide" aria-label="Dismiss">&times;</button></div>`;
+}
+function supportBlock() {
+  const s = meta?.support || {};
+  if (!s.phone && !s.whatsapp) return '';
+  return `<div class="panel"><p class="sub" style="margin-bottom:.5rem">Need help? Talk to Bargo support</p><div class="btns">${s.phone ? `<a class="btn line sm" href="tel:${esc(s.phone)}">${ic('phone')} Call</a>` : ''}${s.whatsapp ? `<a class="btn line sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(s.whatsapp)}">WhatsApp</a>` : ''}</div></div>`;
+}
+function payPanel(j, role) {
+  if (!['agreed', 'picked_up', 'delivered'].includes(j.status)) return '';
+  const amt = money(j.agreedPrice), st = j.paymentStatus || 'unpaid', who = j.payer === 'sender' ? 'the sender' : 'the recipient';
+  const done = st === 'confirmed';
+  let h = `<div class="panel pay"><div class="row between"><p class="sub">Payment: ${j.payment === 'cash' ? 'cash' : 'bank transfer'}</p><b class="price">${amt}</b></div>`;
+  if (j.payment === 'cash') {
+    h += done ? '<p class="okline">Cash received by the courier.</p>' : `<p class="small">${role === 'sender' ? `${j.payer === 'sender' ? 'Pay' : 'The recipient pays'} ${amt} in cash to the courier${j.payer === 'sender' ? ' when the package is collected or delivered' : ' on delivery'}.` : `Collect ${amt} in cash from ${who}.`}</p>`;
+    if (role === 'driver' && !done) h += `<button class="btn sm" data-act="pay-confirm" data-id="${j.id}">I have received the cash</button>`;
+    return h + '</div>';
+  }
+  const bank = role === 'sender' ? j.driver?.bank : (data?.driver?.bank || me?.bank);
+  if (role === 'sender') {
+    h += bank ? `<div class="bank"><div><small>Bank</small><b>${esc(bank.bankName)}</b></div><div><small>Account number</small><b>${esc(bank.accountNumber)}</b> ${copyBtn(bank.accountNumber)}</div><div><small>Account name</small><b>${esc(bank.accountName)}</b></div></div>`
+      : '<p class="notice">The courier has not added bank details yet. Ask them in the chat below, or pay in cash if you both agree.</p>';
+    if (done) h += '<p class="okline">The courier confirmed your payment. Thank you.</p>';
+    else if (st === 'sent') h += '<p class="wait">You said you paid. Waiting for the courier to confirm.</p>';
+    else h += `<p class="small">Transfer ${amt} to this account, then tap the button so the courier can check.</p><button class="btn sm" data-act="pay-sent" data-id="${j.id}">I have paid ${amt}</button>`;
+  } else {
+    h += bank ? `<p class="small">Payment goes to your account: <b>${esc(bank.bankName)} ${esc(bank.accountNumber)}</b>.</p>` : '<p class="notice">Add your bank details in Profile so the sender knows where to pay.</p>';
+    if (done) h += '<p class="okline">You confirmed this payment.</p>';
+    else h += `${st === 'sent' ? '<p class="small" style="color:var(--amber);font-weight:600">The sender says they have paid. Check your account.</p>' : `<p class="small">Waiting for ${who} to pay.</p>`}<button class="btn sm" data-act="pay-confirm" data-id="${j.id}">I have received ${amt}</button>`;
+  }
+  return h + '</div>';
+}
+function photosPanel(j, role) {
+  const ph = j.photos || {}, live = (k) => (k === 'pickup' ? ['agreed', 'picked_up'] : ['picked_up', 'delivered']).includes(j.status);
+  const slot = (k, label) => ph[k] ? `<a href="/api/jobphoto/${j.id}/${k}?v=${ph[k]}" target="_blank" rel="noopener" class="ph"><img alt="${label}" src="/api/jobphoto/${j.id}/${k}?v=${ph[k]}"><small>${label}</small></a>`
+    : (role === 'driver' && live(k) ? `<label class="ph add" for="jp-${k}-${j.id}">${ic('box')}<small>Add ${label.toLowerCase()}</small></label><input id="jp-${k}-${j.id}" type="file" accept="image/*" hidden data-photo="job${k}" data-id="${j.id}">` : '');
+  const a = slot('pickup', 'Package photo'), b = slot('delivery', 'Delivery photo');
+  if (!a && !b) return '';
+  return `<div class="panel"><p class="sub" style="margin-bottom:.5rem">Proof photos${role === 'driver' ? ' (optional, protects you both)' : ''}</p><div class="phs">${a}${b}</div></div>`;
+}
+const reportBtn = (j) => (['agreed', 'picked_up', 'delivered', 'cancelled'].includes(j.status) ? `<button class="link" style="margin-top:.8rem" data-act="report" data-id="${j.id}">Report a problem with this delivery</button>` : '');
+
 function codePanel(j) {
   if (!['agreed', 'picked_up'].includes(j.status) || !j.deliveryCode) return '';
-  const msg = `Hello ${j.recipientName}, ${me.name} is sending you a package with Bargo. Give the courier this delivery code when it arrives: ${j.deliveryCode}`;
+  const msg = `Hello ${j.recipientName}, ${me.name} is sending you a package with Bargo. Give the courier this delivery code when it arrives: ${j.deliveryCode}. Follow your delivery live: ${trackLink(j)}`;
   return `<div class="panel code"><p class="sub">Delivery code</p>
     <div class="pin">${j.deliveryCode.split('').map((c) => `<span>${c}</span>`).join('')}</div>
     <p class="small">Give this code to ${esc(j.recipientName)}. The courier needs it to complete the delivery, so the package only counts as delivered when the recipient has it.</p>
-    <div class="btns"><a class="btn line sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(j.recipientPhone)}?text=${encodeURIComponent(msg)}">Send on WhatsApp</a><a class="btn line sm" href="sms:${esc(j.recipientPhone)}?body=${encodeURIComponent(msg)}">Send by SMS</a></div></div>`;
+    <div class="btns"><a class="btn line sm" target="_blank" rel="noopener" href="https://wa.me/${waNum(j.recipientPhone)}?text=${encodeURIComponent(msg)}">Send on WhatsApp</a><a class="btn line sm" href="sms:${esc(j.recipientPhone)}?body=${encodeURIComponent(msg)}">Send by SMS</a></div>
+    <p class="small muted" style="margin-top:.5rem">The message includes a live tracking link, so ${esc(j.recipientName.split(' ')[0])} can watch the courier approach without installing anything. ${copyBtn(trackLink(j), 'Copy link')}</p></div>`;
 }
 
 function chatPanel(j) {
@@ -620,10 +677,15 @@ function vWelcome() {
   </div>`;
 }
 
-const idSelect = (bind, val) => `<select class="input" data-bind="${bind}"><option value="">Select</option>${ID_TYPES.map((t) => `<option ${val === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+const idSelect = (bind, val) => `<select class="input" data-bind="${bind}"><option value="">Select</option>${idTypes().map((t) => `<option ${val === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
 const photoPicker = (kind, photo, existing) => `<div class="photopick">${photo || existing ? `<img class="avatar xl" alt="Your photo" src="${photo || existing}">` : `<span class="avatar xl empty">${ic('user')}</span>`}
   <div><label class="btn line sm inline" for="photo-${kind}" style="width:auto">${photo || existing ? 'Change photo' : 'Take or choose photo'}</label>${photoInput(kind)}
   <p class="small muted" style="margin:.4rem 0 0">A clear photo of your face, no sunglasses.</p></div></div>`;
+const docPicker = (kind, label, hint, fresh, existing) => `<div class="docpick"><div class="docthumb">${fresh || existing ? `<img alt="${esc(label)}" src="${fresh || existing}">` : ic('box')}</div>
+  <div><b>${esc(label)}</b><p class="small muted" style="margin:.15rem 0 .4rem">${esc(hint)}</p><label class="btn line sm inline" for="photo-${kind}" style="width:auto">${fresh || existing ? 'Change photo' : 'Take or choose photo'}</label><input id="photo-${kind}" type="file" accept="image/*" hidden data-photo="${kind}"></div></div>`;
+const docFields = (bind, v, ex = {}) => `<p class="sub" style="margin:.4rem 0 .5rem">Photos we need to approve you</p>
+  ${docPicker(bind + 'id', 'ID document', 'A clear photo of the ID you entered above. All four corners and the number must be readable.', v.idPhoto, ex.id)}
+  ${docPicker(bind + 'veh', 'Your vehicle', 'The whole vehicle with the plate number visible.', v.vehiclePhoto, ex.veh)}`;
 const appFields = (bind, v) => `<label class="field"><span>Area where you live</span><input class="input" maxlength="80" placeholder="e.g. Rumuokoro, Port Harcourt" data-bind="${bind}.area" value="${esc(v.area ?? '')}"></label>
   <div class="two"><label class="field"><span>ID type</span>${idSelect(bind + '.idType', v.idType)}</label>
   <label class="field"><span>ID number</span><input class="input" maxlength="30" autocapitalize="characters" data-bind="${bind}.idNumber" value="${esc(v.idNumber ?? '')}"></label></div>
@@ -646,9 +708,9 @@ function vAuth() {
   else if (!isDriver) body = nameF + phoneF + pw + `<p class="sub" style="margin:.2rem 0 .4rem">Profile photo (optional)</p>${photoPicker('auth', a.photo)}`;
   else if (step === 1) body = nameF + phoneF + pw;
   else if (step === 2) body = `<p class="sub" style="margin-bottom:.4rem">What do you ride or drive?</p>
-        <div class="vehicles">${['bike', 'car', 'van'].map((v) => `<button type="button" class="vehicle" data-act="auth-veh" data-v="${v}" aria-pressed="${veh === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
+        <div class="vehicles">${vehList().map((v) => `<button type="button" class="vehicle" data-act="auth-veh" data-v="${v}" aria-pressed="${veh === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
         <label class="field"><span>Plate number</span><input class="input" maxlength="15" autocapitalize="characters" data-bind="auth.plate" value="${esc(a.plate ?? '')}"></label>`;
-  else body = photoPicker('auth', a.photo) + appFields('auth', a) + '<p class="small muted">We use these details only to check you before you can take deliveries. A Bargo admin reviews every application.</p>';
+  else body = photoPicker('auth', a.photo) + appFields('auth', a) + docFields('auth', a) + '<p class="small muted">We use these details only to check you before you can take deliveries. A Bargo admin reviews every application.</p>';
   const cta = a.busy ? 'Please wait...' : !reg ? 'Log in' : !isDriver ? 'Create account' : step < 3 ? 'Next' : 'Submit application';
   return `<div class="top"><button class="icon-btn" data-act="auth-back" aria-label="Back">${ic('back')}</button></div>
     <h2 class="title">${title}</h2>
@@ -663,7 +725,7 @@ function vAuth() {
       <button class="btn" type="submit" style="margin-top:.8rem" ${a.busy ? 'disabled' : ''}>${cta}</button>
     </form>
     ${!reg && isDriver ? '<p class="help">New here? Tap Apply above. Your application is reviewed before you can take deliveries.</p>' : ''}
-    ${!reg && !isDriver ? '<p class="help">Forgot your password? Ask Bargo support to reset it, then change it in Profile.</p>' : ''}
+    ${!reg ? `<p class="help">Forgot your password? Ask Bargo support to reset it, then change it in Profile.</p>${supportBlock()}` : ''}
     ${reg && !isDriver ? '<p class="help">Couriers see only your first name until a deal is sealed.</p>' : ''}`;
 }
 
@@ -683,7 +745,7 @@ function vSHome() {
   const jobs = data?.jobs || [];
   const live = jobs.filter((j) => OPEN.includes(j.status));
   const needs = jobs.reduce((s, j) => s + turnCount(j), 0);
-  let h = `<div class="greet"><div><small>Welcome back</small><strong>${esc(me.name)}</strong></div>${avatar(me)}</div>${pushCard(false)}`;
+  let h = `<div class="greet"><div><small>Welcome back</small><strong>${esc(me.name)}</strong></div>${avatar(me)}</div>${annBanner()}${pushCard(false)}`;
   if (live.length) {
     const j = live[0];
     h += `<article class="banner" role="link" tabindex="0" data-act="open-job" data-id="${j.id}" style="cursor:pointer">
@@ -725,7 +787,7 @@ function vSNew() {
       ${placeButton('drop', 'Delivery', d.drop)}${d.drop ? `<label class="field detailf"><span>Delivery details (optional): house number, landmark, gate</span><input class="input" maxlength="120" placeholder="e.g. Flat 3, yellow gate" data-bind="draft.dropDetails" value="${esc(d.dropDetails)}"></label>` : ''}
       ${routeInfo}
       <p class="sub" style="margin-bottom:.4rem">Vehicle type</p>
-      <div class="vehicles">${['bike', 'car', 'van'].map((v) => `<button type="button" class="vehicle" data-act="veh" data-v="${v}" aria-pressed="${d.vehicle === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
+      <div class="vehicles">${vehList().map((v) => `<button type="button" class="vehicle" data-act="veh" data-v="${v}" aria-pressed="${d.vehicle === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
       ${d.type === 'scheduled' ? `<label class="field"><span>Pickup date and time</span><input class="input" type="datetime-local" data-bind="draft.scheduledAt" value="${esc(d.scheduledAt)}"></label>` : ''}
       ${err}<button class="btn" data-act="new-next" style="margin-top:.4rem">Next</button>`;
   }
@@ -826,7 +888,7 @@ function vSJob() {
     h += `<div class="panel"><div class="row">${avatar(d)}<div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars</small></div>
       ${['agreed', 'picked_up'].includes(j.status) ? `<button class="btn sm" style="width:auto;margin-right:.4rem" data-act="call-start" data-id="${j.id}" aria-label="Call ${esc(d.name)} in the app">${ic('mic')} Call</button>` : ''}
       <a class="btn line sm" style="width:auto;text-decoration:none" href="tel:${esc(d.phone)}" aria-label="Call ${esc(d.name)} by phone">${ic('phone')}</a></div></div>`;
-    h += codePanel(j) + chatPanel(j);
+    h += payPanel(j, 'sender') + codePanel(j) + chatPanel(j) + photosPanel(j, 'sender');
     const sealed = j.negotiations.find((n) => n.status === 'sealed');
     if (sealed) h += `<p class="h3">How you agreed</p>${thread(sealed.history, 'sender')}`;
     if (j.status === 'delivered') {
@@ -834,6 +896,8 @@ function vSJob() {
         : `<p class="h3">Rate ${esc(d.name.split(' ')[0])}</p><div class="stars">${[1, 2, 3, 4, 5].map((n) => `<button data-act="rate" data-id="${j.id}" data-n="${n}" aria-label="${n} stars">${n}★</button>`).join('')}</div>`;
     }
   } else if (j.status === 'cancelled') h += empty('box', 'This delivery was cancelled.');
+  if (['delivered', 'cancelled'].includes(j.status)) h += `<button class="btn line" style="margin-top:1rem" data-act="rebook" data-id="${j.id}">Book this route again</button>`;
+  h += reportBtn(j);
   if (['open', 'agreed'].includes(j.status)) h += `<button class="btn danger" style="margin-top:1rem" data-act="s-cancel" data-id="${j.id}">Cancel delivery</button>`;
   return h;
 }
@@ -864,7 +928,7 @@ function vDPending() {
   }[ap] || ['Waiting for approval', ''];
   return `<div class="greet"><div class="row">${avatar(d)}<div><small>Welcome</small><strong>${esc(d.name)}</strong></div></div></div>
     <div class="panel status ${ap}"><b>${msg[0]}</b><p>${esc(msg[1])}</p></div>
-    ${pushCard(false)}
+    ${annBanner()}${supportBlock()}${pushCard(false)}
     <p class="h3">Your application</p>
     <div class="panel"><div class="row">${avatar(d, 'lg')}<div><b>${esc(d.name)}</b><br><small class="muted">${esc(d.phone)}<br>${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></div></div>${appSummary(a)}</div>
     ${ap === 'rejected' ? '<button class="btn" data-act="apply-edit">Update my application</button>' : ''}
@@ -875,9 +939,10 @@ function vApply() {
   return `${top}<form data-form="apply">
     ${photoPicker('app', f.photo, data.driver.photoAt ? `/api/photo/${data.driver.id}?v=${data.driver.photoAt}` : '')}
     <p class="sub" style="margin-bottom:.4rem">Vehicle</p>
-    <div class="vehicles">${['bike', 'car', 'van'].map((v) => `<button type="button" class="vehicle" data-act="app-veh" data-v="${v}" aria-pressed="${f.vehicle === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
+    <div class="vehicles">${vehList().map((v) => `<button type="button" class="vehicle" data-act="app-veh" data-v="${v}" aria-pressed="${f.vehicle === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
     <label class="field"><span>Plate number</span><input class="input" maxlength="15" autocapitalize="characters" data-bind="app.plate" value="${esc(f.plate ?? '')}"></label>
     ${appFields('app', f)}
+    ${docFields('app', f, { id: data.driver.idPhotoAt ? `/api/photo/${data.driver.id}?k=id&v=${data.driver.idPhotoAt}` : '', veh: data.driver.vehiclePhotoAt ? `/api/photo/${data.driver.id}?k=vehicle&v=${data.driver.vehiclePhotoAt}` : '' })}
     ${f.error ? `<p class="err" role="alert">${esc(f.error)}</p>` : ''}
     <button class="btn" type="submit" ${f.busy ? 'disabled' : ''}>${f.busy ? 'Please wait...' : 'Send application'}</button></form>`;
 }
@@ -885,7 +950,7 @@ function vApply() {
 function vDHome() {
   const f = data, d = f.driver, on = d.status === 'online';
   let h = `<div class="greet"><div class="row">${avatar(d)}<div><small>Welcome back</small><strong>${esc(d.name)}</strong></div></div><div class="row"><small class="muted">${on ? 'Online' : 'Offline'}</small>
-    <label class="switch" title="${on ? 'Online' : 'Offline'}"><input type="checkbox" data-act="toggle-online" ${on ? 'checked' : ''} aria-label="Online"><i></i></label></div></div>${pushCard(false)}`;
+    <label class="switch" title="${on ? 'Online' : 'Offline'}"><input type="checkbox" data-act="toggle-online" ${on ? 'checked' : ''} aria-label="Online"><i></i></label></div></div>${annBanner()}${pushCard(false)}`;
   if (f.current.length) {
     const j = f.current[0];
     h += `<article class="banner" role="link" tabindex="0" data-act="open-job" data-id="${j.id}" style="cursor:pointer"><small class="muted">You have 1 delivery in progress</small><b>#${j.id} ${esc(j.itemType)}</b>
@@ -914,9 +979,11 @@ function vDJob() {
       <div class="row between" style="margin-top:.4rem"><span>Sender: <b>${esc(j.senderName)}</b></span>${j.senderPhone ? `<a class="link" href="tel:${esc(j.senderPhone)}">${esc(j.senderPhone)}</a>` : ''}</div>
       <div class="row between" style="margin-top:.4rem"><span>Recipient: <b>${esc(j.recipientName)}</b></span><a class="link" href="tel:${esc(j.recipientPhone)}">${esc(j.recipientPhone)}</a></div></div>`;
     if (['agreed', 'picked_up'].includes(j.status)) h += `<button class="btn" style="margin-bottom:.6rem" data-act="call-start" data-id="${j.id}">${ic('mic')} Call ${esc(j.senderName.split(' ')[0])} in the app</button><a class="btn line" style="text-decoration:none;margin-bottom:.7rem" target="_blank" rel="noopener" href="${mapsLink(j.status === 'agreed' ? j.pickup : j.drop)}">${ic('nav')} Navigate to ${j.status === 'agreed' ? 'pickup' : 'drop-off'}</a>${ui.geoDenied ? '<p class="notice">Turn on location for Bargo so the sender can follow your trip.</p>' : '<p class="small muted" style="margin:-.3rem 0 .7rem">The sender can follow you on the map while this app is open.</p>'}` + chatPanel(j);
+    h += payPanel(j, 'driver') + photosPanel(j, 'driver');
     if (j.status === 'agreed') h += `<button class="btn" data-act="d-pickup" data-id="${j.id}">I have picked up the package</button><button class="link" style="margin-top:.7rem" data-act="d-withdraw" data-id="${j.id}">Pull out of this delivery</button>`;
     if (j.status === 'picked_up') h += `<form class="panel" data-form="deliver" data-id="${j.id}"><p class="sub" style="margin-bottom:.5rem">Ask ${esc(j.recipientName)} for the 4-digit delivery code</p>
       <div class="row"><input class="input codein" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" placeholder="0000" aria-label="Delivery code" data-bind="dc.code" value="${esc(ui.dc.code ?? '')}"><button class="btn inline" type="submit" style="width:auto">Complete delivery</button></div></form>`;
+    h += reportBtn(j);
     if (j.status !== 'delivered') h += `<p class="sub" style="margin-top:.8rem">${!e.commissionActive ? 'There is no commission right now. You keep the full price.' : e.commissionDueToday ? `Your daily commission of ${money(e.commissionPerDay)} is charged when you complete your first delivery today.` : 'Your commission for today is already paid. This delivery costs you nothing extra.'}</p>`;
     return h;
   }
@@ -961,6 +1028,15 @@ function vProfile() {
     <div class="row" style="margin-bottom:1rem">${avatar(isD && d ? d : me, 'lg')}<div class="grow"><b>${esc(me.name)}</b><br><small class="muted">${esc(me.phone)}${isD ? `, ${esc(vlabel(me.vehicle))}, ${esc(me.plate)}` : ''}</small><br>
       <label class="link" for="photo-profile" style="cursor:pointer">${(isD && d ? d : me).photoAt ? 'Change photo' : 'Add a photo'}</label>${me.photoAt && !isD ? ' <button class="link" data-act="photo-remove" style="margin-left:.6rem">Remove</button>' : ''}${photoInput('profile')}</div></div>`;
   if (d) h += `<div class="stats"><div class="stat"><b>${d.rating.toFixed(1)}</b><small>Rating</small></div><div class="stat"><b>${d.completed}</b><small>Deliveries</small></div><div class="stat"><b>${data.earnings.commissionActive ? money(data.earnings.commissionPerDay) : 'Free'}</b><small>Daily commission</small></div></div>`;
+  if (isD) {
+    const b = (d && d.bank) || me.bank || {}, k = ui.bk || {};
+    h += `<form class="panel" data-form="bank"><p class="sub" style="margin-bottom:.2rem">Bank account for transfer payments</p><p class="small muted" style="margin-bottom:.6rem">Senders who pay by transfer see these details after a deal is sealed. Leave all three empty to remove them.</p>
+      <label class="field"><span>Bank name</span><input class="input" maxlength="40" placeholder="e.g. GTBank" data-bind="bk.bankName" value="${esc(k.bankName ?? b.bankName ?? '')}"></label>
+      <div class="two"><label class="field"><span>Account number</span><input class="input" inputmode="numeric" maxlength="10" data-bind="bk.accountNumber" value="${esc(k.accountNumber ?? b.accountNumber ?? '')}"></label>
+      <label class="field"><span>Account name</span><input class="input" maxlength="60" data-bind="bk.accountName" value="${esc(k.accountName ?? b.accountName ?? '')}"></label></div>
+      ${ui.bkErr ? `<p class="err" role="alert">${esc(ui.bkErr)}</p>` : ''}<button class="btn sm inline" type="submit">Save bank details</button></form>`;
+  }
+  h += supportBlock();
   h += `<form class="panel" data-form="pw"><p class="sub" style="margin-bottom:.6rem">Change password</p>
     <label class="field"><span>Current password</span><input class="input" type="password" autocomplete="current-password" data-bind="pw.current" value="${esc(ui.pw.current ?? '')}"></label>
     <label class="field"><span>New password (8 or more characters)</span><input class="input" type="password" autocomplete="new-password" data-bind="pw.next" value="${esc(ui.pw.next ?? '')}"></label>
@@ -972,11 +1048,40 @@ function vProfile() {
   return h;
 }
 
+const docThumbs = (d) => `<div class="phs" style="margin-top:.6rem">${d.idPhotoAt ? `<a class="ph" target="_blank" rel="noopener" href="/api/photo/${esc(d.id)}?k=id&v=${d.idPhotoAt}"><img alt="ID document" src="/api/photo/${esc(d.id)}?k=id&v=${d.idPhotoAt}"><small>ID document</small></a>` : '<span class="ph"><small class="muted">No ID photo (older account)</small></span>'}${d.vehiclePhotoAt ? `<a class="ph" target="_blank" rel="noopener" href="/api/photo/${esc(d.id)}?k=vehicle&v=${d.vehiclePhotoAt}"><img alt="Vehicle" src="/api/photo/${esc(d.id)}?k=vehicle&v=${d.vehiclePhotoAt}"><small>Vehicle</small></a>` : '<span class="ph"><small class="muted">No vehicle photo (older account)</small></span>'}</div>`;
+const lines = (v) => String(v || '').split('\n').map((x) => x.trim()).filter(Boolean);
+function siteForm() {
+  const st = data.site, a = ui.adm, g = (k, d) => a['site_' + k] ?? d;
+  const ann = { ...st.announcement, ...(a.site_ann || {}) };
+  return `<form class="panel" data-form="admin-site"><p class="sub" style="margin-bottom:.6rem"><b>App settings</b>: everything senders and couriers see</p>
+    <label class="field"><span>Item types senders can choose (one per line)</span><textarea class="input" rows="6" data-bind="adm.site_items">${esc(g('items', st.items.join('\n')))}</textarea></label>
+    <label class="field"><span>Popular areas shown when choosing a place (one per line)</span><textarea class="input" rows="6" data-bind="adm.site_areas">${esc(g('areas', st.areas.join('\n')))}</textarea></label>
+    <label class="field"><span>ID types couriers can use (one per line)</span><textarea class="input" rows="4" data-bind="adm.site_idTypes">${esc(g('idTypes', st.idTypes.join('\n')))}</textarea></label>
+    <div class="two"><label class="field"><span>Lowest price allowed (₦)</span><input class="input" inputmode="numeric" data-num="1" data-bind="adm.site_minPrice" value="${esc(g('minPrice', st.minPrice))}"></label>
+    <label class="field"><span>Highest price allowed (₦)</span><input class="input" inputmode="numeric" data-num="1" data-bind="adm.site_maxPrice" value="${esc(g('maxPrice', st.maxPrice))}"></label></div>
+    <div class="two"><label class="field"><span>Support phone</span><input class="input" type="tel" maxlength="20" placeholder="08012345678" data-bind="adm.site_supportPhone" value="${esc(g('supportPhone', st.supportPhone))}"></label>
+    <label class="field"><span>Support WhatsApp</span><input class="input" type="tel" maxlength="20" placeholder="08012345678" data-bind="adm.site_supportWhatsapp" value="${esc(g('supportWhatsapp', st.supportWhatsapp))}"></label></div>
+    <p class="sub" style="margin:.2rem 0">Vehicle types on offer</p>
+    ${['bike', 'car', 'van'].map((v) => { const on = a['site_on_' + v] ?? !st.disabledVehicles.includes(v); return `<label class="check"><input type="checkbox" data-bind="adm.site_on_${v}" ${on ? 'checked' : ''}> <span>${vlabel(v)}${on ? '' : ' (hidden from senders and new couriers)'}</span></label>`; }).join('')}
+    <p class="sub" style="margin:.8rem 0 .2rem">Announcement banner</p>
+    <label class="check"><input type="checkbox" data-bind="adm.site_annOn" ${(a.site_annOn ?? st.announcement.active) ? 'checked' : ''}> <span>Show the banner</span></label>
+    <label class="field"><span>Message (up to 240 characters)</span><textarea class="input" rows="3" maxlength="240" data-bind="adm.site_annText">${esc(g('annText', st.announcement.text))}</textarea></label>
+    <label class="field"><span>Who sees it</span><select class="input" data-bind="adm.site_annAud">${[['all', 'Everyone'], ['senders', 'Senders only'], ['couriers', 'Couriers only']].map(([v, l]) => `<option value="${v}" ${g('annAud', st.announcement.audience) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <button class="btn sm inline" type="submit">Save settings</button></form>`;
+}
+function reportsPanel() {
+  const open = data.reports.filter((r) => r.status === 'open'), done = data.reports.filter((r) => r.status !== 'open').slice(0, 5);
+  const row = (r) => `<article class="panel"><div class="row between"><b>Delivery #${r.jobId}</b><small class="muted">${fmtDate(r.at)}</small></div>
+    <p class="small" style="margin:.3rem 0"><b>${esc(r.name)}</b> (${esc(r.role === 'driver' ? 'courier' : 'sender')}, <a class="link" href="tel:${esc(r.phone)}">${esc(r.phone)}</a>)</p><p>${esc(r.text)}</p>
+    ${r.status === 'open' ? `<button class="btn sm inline" data-act="admin-resolve" data-id="${r.id}">Close report</button>` : `<p class="small okline">Closed${r.adminNote ? ': ' + esc(r.adminNote) : ''}</p>`}</article>`;
+  return `<p class="h3">Problem reports${open.length ? ` <span class="badge">${open.length} open</span>` : ''}</p>${open.length ? open.map(row).join('') : '<p class="sub">No open reports.</p>'}${done.length ? `<details class="small" style="margin:.5rem 0"><summary>Recently closed</summary>${done.map(row).join('')}</details>` : ''}`;
+}
+
 function pendingApps() {
   const list = data.drivers.filter((d) => d.approval === 'pending');
   const rej = data.drivers.filter((d) => d.approval === 'rejected');
   const card = (d) => `<article class="panel app"><div class="row">${avatar(d, 'lg')}<div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(d.phone)}<br>${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></div><small class="muted">${fmtDate(d.application.appliedAt)}</small></div>
-    ${appSummary(d.application)}
+    ${appSummary(d.application)}${docThumbs(d)}
     ${d.approval === 'rejected' ? `<p class="small" style="color:#b3261e">Rejected: ${esc(d.approvalNote)}</p>` : `<div class="btns"><button class="btn sm" data-act="admin-approve" data-id="${esc(d.id)}">Approve</button><button class="btn danger sm" data-act="admin-reject" data-id="${esc(d.id)}" data-name="${esc(d.name)}">Reject</button></div>`}</article>`;
   return `<p class="h3" style="margin-top:0">Courier applications${list.length ? ` <span class="badge">${list.length} waiting</span>` : ''}</p>
     ${list.length ? list.map(card).join('') : '<p class="sub">No applications waiting.</p>'}
@@ -988,6 +1093,7 @@ function vAdmin() {
   const head = `<div class="top"><button class="icon-btn" data-act="logout" aria-label="Log out of admin">${ic('back')}</button><h2 class="title grow">Admin</h2></div>`;
   if (!data) return `<div class="admin">${head}<p class="empty">Loading...</p></div>`;
   const t = data.totals;
+  const editBtn = (u, role) => `<button class="btn line sm inline" data-act="admin-edit" data-id="${esc(u.id)}" data-name="${esc(u.name)}" data-phone="${esc(u.phone)}" data-plate="${esc(u.plate || '')}" data-role="${role}">Edit</button> `;
   const reset = (u) => `<button class="btn line sm inline" data-act="admin-reset" data-id="${esc(u.id)}" data-name="${esc(u.name)}">Reset password</button>`;
   return `<div class="admin">${head}
     ${ui.tempPw ? `<div class="temp" role="status">New password for <b>${esc(ui.tempPw.name)}</b> (${esc(ui.tempPw.phone)}): <code>${esc(ui.tempPw.password)}</code><br><small>Shown once. Send it to them and ask them to change it in Profile.</small></div>` : ''}
@@ -995,6 +1101,7 @@ function vAdmin() {
       <div class="stat"><b>${t.delivered}</b><small>Delivered</small></div><div class="stat"><b>${t.active}</b><small>On the road</small></div><div class="stat"><b>${t.open}</b><small>Open for offers</small></div>
       <div class="stat"><b>${t.couriers}</b><small>Couriers</small></div><div class="stat"><b>${t.senders}</b><small>Senders</small></div></div>
     ${pendingApps()}
+    ${reportsPanel()}
     <form class="panel" data-form="admin-save"><p class="sub">Daily commission per courier</p>
       <label class="check"><input type="checkbox" data-bind="adm.active" ${(ui.adm.active ?? data.settings.commissionActive) ? 'checked' : ''}> <span>Charge commission${(ui.adm.active ?? data.settings.commissionActive) ? '' : ' (off: couriers keep the full price)'}</span></label>
       <div class="row" style="margin-top:.4rem"><input class="input" inputmode="numeric" data-num="1" data-bind="adm.commission" value="${esc(ui.adm.commission ?? data.settings.commissionPerDay)}" style="max-width:180px" aria-label="Daily commission in naira"><button class="btn sm inline" type="submit">Save</button></div>
@@ -1004,12 +1111,13 @@ function vAdmin() {
       ${['bike', 'car', 'van'].map((v) => `<tr><td><b>${vlabel(v)}</b></td><td><input class="input" inputmode="numeric" data-num="1" data-bind="adm.${v}_base" value="${esc(ui.adm[v + '_base'] ?? data.pricing[v].base)}" aria-label="${vlabel(v)} starting price"></td><td><input class="input" inputmode="numeric" data-num="1" data-bind="adm.${v}_km" value="${esc(ui.adm[v + '_km'] ?? data.pricing[v].perKm)}" aria-label="${vlabel(v)} price per km"></td></tr>`).join('')}</table></div>
       <button class="btn sm inline" type="submit" style="margin-top:.5rem">Save prices</button>
       <p class="sub" style="margin-top:.5rem">Senders still choose their own price and couriers can counter. These only set the suggested starting price: starting price plus the rate per km of road distance.</p></form>
+    ${siteForm()}
     <div class="cols"><div><p class="h3">Couriers</p><div class="tbl-wrap"><table class="tbl"><tr><th>Courier</th><th>Status</th><th>Trips</th><th></th></tr>
-      ${data.drivers.filter((d) => d.approval !== 'pending').map((d) => `<tr><td><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b><br><small class="muted">${esc(d.phone)}, ${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></div></div></td><td>${esc(d.approval === 'approved' ? d.status : d.approval)}</td><td>${d.completed}</td><td>${d.approval === 'approved' ? `<button class="btn line sm inline" data-act="admin-suspend" data-id="${esc(d.id)}" data-name="${esc(d.name)}">Suspend</button>` : d.approval === 'suspended' ? `<button class="btn line sm inline" data-act="admin-reinstate" data-id="${esc(d.id)}">Reinstate</button>` : ''} ${reset(d)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No couriers yet.</td></tr>'}</table></div></div>
+      ${data.drivers.filter((d) => d.approval !== 'pending').map((d) => `<tr><td><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b><br><small class="muted">${esc(d.phone)}, ${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></div></div></td><td>${esc(d.approval === 'approved' ? d.status : d.approval)}</td><td>${d.completed}</td><td>${editBtn(d, 'driver')}${d.approval === 'approved' ? `<button class="btn line sm inline" data-act="admin-suspend" data-id="${esc(d.id)}" data-name="${esc(d.name)}">Suspend</button>` : d.approval === 'suspended' ? `<button class="btn line sm inline" data-act="admin-reinstate" data-id="${esc(d.id)}">Reinstate</button>` : ''} ${reset(d)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No couriers yet.</td></tr>'}</table></div></div>
     <div><p class="h3">Senders</p><div class="tbl-wrap"><table class="tbl"><tr><th>Sender</th><th>Deliveries</th><th></th></tr>
-      ${data.senders.map((u) => `<tr><td><div class="row">${avatar(u)}<div><b>${esc(u.name)}</b><br><small class="muted">${esc(u.phone)}</small></div></div></td><td>${u.jobs}</td><td>${reset(u)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No senders yet.</td></tr>'}</table></div></div></div>
-    <p class="h3">Recent deliveries</p><div class="tbl-wrap"><table class="tbl"><tr><th>#</th><th>Route</th><th>Distance</th><th>Price</th><th>Status</th></tr>
-      ${data.jobs.slice(0, 15).map((j) => `<tr><td>${j.id}</td><td>${esc(j.pickup.label)} to ${esc(j.drop.label)}</td><td>${j.km} km</td><td>${money(j.agreedPrice || j.openingPrice)}</td><td>${STATUS[j.status]}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No deliveries yet.</td></tr>'}</table></div>
+      ${data.senders.map((u) => `<tr><td><div class="row">${avatar(u)}<div><b>${esc(u.name)}</b><br><small class="muted">${esc(u.phone)}</small></div></div></td><td>${u.jobs}${u.blocked ? ' <span class="chip cancelled">Blocked</span>' : ''}</td><td>${editBtn(u, 'sender')}<button class="btn line sm inline" data-act="admin-block" data-id="${esc(u.id)}" data-name="${esc(u.name)}" data-on="${u.blocked ? 0 : 1}">${u.blocked ? 'Unblock' : 'Block'}</button> ${reset(u)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No senders yet.</td></tr>'}</table></div></div></div>
+    <p class="h3">Recent deliveries</p><div class="tbl-wrap"><table class="tbl"><tr><th>#</th><th>Route</th><th>Distance</th><th>Price</th><th>Status</th><th></th></tr>
+      ${data.jobs.slice(0, 15).map((j) => `<tr><td>${j.id}</td><td>${esc(j.pickup.label)} to ${esc(j.drop.label)}<br><small class="muted">${j.payment === 'cash' ? 'Cash' : 'Transfer'}${j.paymentStatus === 'confirmed' ? ', paid' : ''}</small></td><td>${j.km} km</td><td>${money(j.agreedPrice || j.openingPrice)}</td><td>${STATUS[j.status]}</td><td>${OPEN.includes(j.status) ? `<button class="btn line sm inline" data-act="admin-cancel-job" data-id="${j.id}">Cancel</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No deliveries yet.</td></tr>'}</table></div>
     <p class="h3">Commission ledger</p><div class="tbl-wrap"><table class="tbl"><tr><th>Date</th><th>Courier</th><th>Amount</th></tr>
       ${data.ledger.map((l) => `<tr><td>${dayLabel(l.date)}</td><td>${esc(data.drivers.find((d) => d.id === l.driverId)?.name || l.driverId)}</td><td>${money(l.amount)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing collected yet.</td></tr>'}</table></div></div>`;
 }
@@ -1108,7 +1216,7 @@ async function startSession(user) {
 
 // ---------- Actions ----------
 const ACT = {
-  'auth-start': ({ role }) => { ui.auth = { role, mode: 'login', step: 1, phone: ls.get('phone'), password: '', name: '', vehicle: 'bike', plate: '', photo: '', area: '', idType: '', idNumber: '', guarantorName: '', guarantorPhone: '', show: false, error: '', busy: false }; render(true); },
+  'auth-start': ({ role }) => { ui.auth = { role, mode: 'login', step: 1, phone: ls.get('phone'), password: '', name: '', vehicle: 'bike', plate: '', photo: '', area: '', idType: '', idNumber: '', guarantorName: '', guarantorPhone: '', idPhoto: '', vehiclePhoto: '', show: false, error: '', busy: false }; render(true); },
   'auth-back': () => { const a = ui.auth; if (a.mode === 'register' && a.role === 'driver' && (a.step || 1) > 1) { a.step -= 1; a.error = ''; render(true); } else if (a.mode === 'register' && a.role === 'driver') { a.mode = 'login'; a.error = ''; render(true); } else { ui.auth = null; render(true); } },
   'auth-mode': ({ mode }) => { ui.auth.mode = mode; ui.auth.step = 1; ui.auth.error = ''; render(true); },
   'auth-veh': ({ v }) => { ui.auth.vehicle = v; render(); },
@@ -1117,7 +1225,7 @@ const ACT = {
   'admin-back': () => { ui.admin = null; render(true); },
   logout: async () => { if (me && me.role !== 'admin') await dropPush(); try { await call('auth/logout', {}); } catch { /* signing out locally anyway */ } signedOut(); },
   tab: ({ tab: t }) => { tab(t); if (t === 'alerts' && data?.notes?.unread) setTimeout(() => nav.cur.name === 'alerts' && markRead(), 1500); },
-  'apply-edit': () => { const d = data.driver, a = d.application || {}; ui.app = { vehicle: d.vehicle, plate: d.plate, area: a.area, idType: a.idType, idNumber: a.idNumber, guarantorName: a.guarantorName, guarantorPhone: a.guarantorPhone, photo: '', error: '', busy: false }; go('apply'); },
+  'apply-edit': () => { const d = data.driver, a = d.application || {}; ui.app = { vehicle: d.vehicle, plate: d.plate, area: a.area, idType: a.idType, idNumber: a.idNumber, guarantorName: a.guarantorName, guarantorPhone: a.guarantorPhone, photo: '', idPhoto: '', vehiclePhoto: '', error: '', busy: false }; go('apply'); },
   'app-veh': ({ v }) => { ui.app.vehicle = v; render(); },
   'photo-remove': () => run(async () => { const r = await call('me/photo/remove', {}); me = r.user; }, 'Photo removed.'),
   'admin-approve': ({ id }) => run(() => call(`admin/users/${id}/approval`, { action: 'approve' }), 'Courier approved.'),
@@ -1199,6 +1307,30 @@ const ACT = {
   'd-pickup': ({ id }) => run(() => call(`jobs/${id}/driver/pickup`, {}), 'Marked as picked up.'),
   'd-withdraw': ({ id }) => { if (confirm('Pull out? The delivery goes back to other couriers.')) run(async () => { await call(`jobs/${id}/driver/withdraw`, {}); back(); }); },
   'admin-reset': ({ id, name }) => { if (confirm(`Reset the password for ${name}? Their current sessions will end.`)) run(async () => { const r = await call(`admin/users/${id}/reset`, {}); ui.tempPw = { name: r.name, phone: r.phone, password: r.tempPassword }; }); },
+  copy: ({ text }) => { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => toast('Copied.'), () => toast('Could not copy. Press and hold to copy it yourself.', true)); },
+  'ann-hide': () => { ls.set('bargo_ann', meta.announcement.text); render(); },
+  'pay-sent': ({ id }) => { if (confirm('Confirm that you have sent the money by transfer?')) run(() => call(`jobs/${id}/payment`, { action: 'sent' }), 'Thanks. The courier will confirm.'); },
+  'pay-confirm': ({ id }) => run(() => call(`jobs/${id}/payment`, { action: 'confirm' }), 'Payment recorded.'),
+  report: ({ id }) => { const text = prompt(`What went wrong with delivery #${id}? Bargo support will look into it.`); if (text && text.trim()) run(() => call(`jobs/${id}/report`, { text: text.trim() }), 'Report sent. We will look into it.'); },
+  rebook: ({ id }) => {
+    const j = senderJob(id); if (!j) return;
+    const pt = (x) => ({ lat: x.lat, lng: x.lng, label: x.label, address: x.address || '' });
+    ui.draft = { ...defaultDraft('instant'), pickup: pt(j.pickup), drop: pt(j.drop), pickupDetails: j.pickup.details || '', dropDetails: j.drop.details || '', vehicle: vehList().includes(j.vehicle) ? j.vehicle : vehList()[0], itemType: (meta.items || []).includes(j.itemType) ? j.itemType : '', quantity: j.quantity, recipientName: j.recipientName, recipientPhone: j.recipientPhone, payer: j.payer, payment: j.payment };
+    ui.step = 1; ui.error = ''; ui.est = null; ui.route = null; go('new'); updateRoute();
+  },
+  'admin-edit': ({ id, name, phone, plate, role }) => {
+    const n = prompt('Name', name); if (n === null) return;
+    const ph = prompt('Phone number', phone); if (ph === null) return;
+    const body = { name: n, phone: ph };
+    if (role === 'driver') { const pl = prompt('Plate number', plate); if (pl === null) return; body.plate = pl; }
+    run(() => call(`admin/users/${id}/edit`, body), 'Details updated.');
+  },
+  'admin-block': ({ id, name, on }) => {
+    if (on === '1') { const reason = prompt(`Why is ${name} being blocked? They will be signed out and cannot post deliveries.`); if (reason && reason.trim().length >= 3) run(() => call(`admin/users/${id}/block`, { blocked: true, reason: reason.trim() }), 'Sender blocked.'); }
+    else run(() => call(`admin/users/${id}/block`, { blocked: false }), 'Sender unblocked.');
+  },
+  'admin-cancel-job': ({ id }) => { const reason = prompt(`Cancel delivery #${id}? Everyone involved is told. Reason:`, 'Cancelled by Bargo support'); if (reason !== null) run(() => call(`admin/jobs/${id}/cancel`, { reason: reason.trim() }), 'Delivery cancelled.'); },
+  'admin-resolve': ({ id }) => { const note = prompt('Reply to the person who reported this (optional):', ''); if (note !== null) run(() => call(`admin/reports/${id}/resolve`, { note: note.trim() }), 'Report closed.'); },
   install: async () => { if (!installEvent) return; installEvent.prompt(); await installEvent.userChoice; installEvent = null; render(); },
 };
 
@@ -1214,6 +1346,14 @@ document.addEventListener('change', async (e) => {
   if (t.dataset?.photo && t.files && t.files[0]) {
     const kind = t.dataset.photo;
     try {
+      if (['authid', 'authveh', 'appid', 'appveh'].includes(kind)) {
+        const url = await readPhoto(t.files[0], true), st = kind.startsWith('auth') ? ui.auth : ui.app;
+        st[kind.endsWith('id') ? 'idPhoto' : 'vehiclePhoto'] = url; st.error = ''; render(); t.value = ''; return;
+      }
+      if (kind === 'jobpickup' || kind === 'jobdelivery') {
+        const url = await readPhoto(t.files[0], true, 190000, 900);
+        toast('Uploading photo...'); await call(`jobs/${t.dataset.id}/photo`, { kind: kind.slice(3), photo: url }); toast('Photo added.'); dsig = ''; await pull(true); t.value = ''; return;
+      }
       const url = await readPhoto(t.files[0]);
       if (kind === 'auth') { ui.auth.photo = url; ui.auth.error = ''; render(); }
       else if (kind === 'app') { ui.app.photo = url; ui.app.error = ''; render(); }
@@ -1257,6 +1397,8 @@ function authError(a) {
     if (!a.photo) return 'Add a clear photo of yourself.';
     if ((a.area || '').trim().length < 3) return 'Enter the area where you live.';
     if (!a.idType) return 'Choose the type of ID you will use.';
+    if (!a.idPhoto) return 'Add a photo of your ID document.';
+    if (!a.vehiclePhoto) return 'Add a photo of your vehicle.';
     if (!/^[A-Za-z0-9][A-Za-z0-9 -]{4,29}$/.test((a.idNumber || '').trim())) return 'Enter your ID number.';
     if ((a.guarantorName || '').trim().length < 2) return "Enter your guarantor's name.";
     if (!/^[+\d][\d\s()-]{7,18}$/.test((a.guarantorPhone || '').trim())) return "Enter your guarantor's phone number.";
@@ -1272,12 +1414,12 @@ async function submitAuth() {
   try {
     const body = { role: a.role, phone: a.phone, password: a.password };
     if (reg) { body.name = a.name; if (a.photo) body.photo = a.photo; }
-    if (reg && isD) Object.assign(body, { vehicle: a.vehicle || 'bike', plate: a.plate, area: a.area, idType: a.idType, idNumber: a.idNumber, guarantorName: a.guarantorName, guarantorPhone: a.guarantorPhone });
+    if (reg && isD) Object.assign(body, { vehicle: a.vehicle || 'bike', plate: a.plate, area: a.area, idType: a.idType, idNumber: a.idNumber, guarantorName: a.guarantorName, guarantorPhone: a.guarantorPhone, idPhoto: a.idPhoto, vehiclePhoto: a.vehiclePhoto });
     const r = await call(reg ? 'auth/register' : 'auth/login', body);
     ls.set('phone', a.phone);
     await startSession(r.user);
     if (reg && isD) toast('Application sent. We will alert you when it is reviewed.');
-  } catch (e) { a.busy = false; a.error = e.message; if (!reg) a.password = ''; if (reg && isD && /photo|ID|guarantor|area|plate|vehicle/i.test(e.message)) a.step = /plate|vehicle/i.test(e.message) ? 2 : 3; render(); }
+  } catch (e) { a.busy = false; a.error = e.message; if (!reg) a.password = ''; if (reg && isD && /photo|ID|guarantor|area|plate|vehicle/i.test(e.message)) a.step = /plate/i.test(e.message) ? 2 : 3; render(); }
 }
 
 document.addEventListener('submit', (e) => {
@@ -1291,9 +1433,19 @@ document.addEventListener('submit', (e) => {
       try {
         const body = { vehicle: a.vehicle, plate: a.plate, area: a.area, idType: a.idType, idNumber: a.idNumber, guarantorName: a.guarantorName, guarantorPhone: a.guarantorPhone };
         if (a.photo) body.photo = a.photo;
+        if (a.idPhoto) body.idPhoto = a.idPhoto;
+        if (a.vehiclePhoto) body.vehiclePhoto = a.vehiclePhoto;
         await call('driver/application', body);
         ui.app = null; toast('Application sent. We will alert you when it is reviewed.'); tab('home'); dsig = ''; await pull(true);
       } catch (err) { a.busy = false; a.error = err.message; render(); }
+    })();
+  }
+  else if (f === 'bank') {
+    (async () => {
+      ui.bkErr = '';
+      try { const k = ui.bk || {}, b = me.bank || {}; const r = await call('driver/bank', { bankName: k.bankName ?? b.bankName ?? '', accountNumber: k.accountNumber ?? b.accountNumber ?? '', accountName: k.accountName ?? b.accountName ?? '' }); me = r.user; ui.bk = {}; dsig = ''; toast('Bank details saved.'); await pull(true); }
+      catch (err) { ui.bkErr = err.message; }
+      render();
     })();
   }
   else if (f === 'chat') sendChat(e.target.dataset.id, ui.chat['t' + e.target.dataset.id]);
@@ -1304,6 +1456,15 @@ document.addEventListener('submit', (e) => {
       catch (err) { ui.admin.error = err.message; ui.admin.pin = ''; render(); }
     })();
   } else if (f === 'admin-save') run(async () => { await call('admin/settings', { commissionPerDay: ui.adm.commission ?? data.settings.commissionPerDay, commissionActive: ui.adm.active ?? data.settings.commissionActive }); ui.adm = {}; }, 'Commission settings saved.');
+  else if (f === 'admin-site') run(async () => {
+    const st = data.site, a = ui.adm, g = (k, d) => a['site_' + k] ?? d, off = ['bike', 'car', 'van'].filter((v) => !(a['site_on_' + v] ?? !st.disabledVehicles.includes(v)));
+    await call('admin/settings', { site: {
+      items: lines(g('items', st.items.join('\n'))), areas: lines(g('areas', st.areas.join('\n'))), idTypes: lines(g('idTypes', st.idTypes.join('\n'))),
+      minPrice: g('minPrice', st.minPrice), maxPrice: g('maxPrice', st.maxPrice), supportPhone: g('supportPhone', st.supportPhone), supportWhatsapp: g('supportWhatsapp', st.supportWhatsapp),
+      disabledVehicles: off, announcement: { active: a.site_annOn ?? st.announcement.active, text: g('annText', st.announcement.text), audience: g('annAud', st.announcement.audience) },
+    } });
+    ui.adm = {}; meta = await call('meta');
+  }, 'Settings saved.');
   else if (f === 'admin-prices') run(async () => {
     const pricing = {};
     for (const v of ['bike', 'car', 'van']) pricing[v] = { base: ui.adm[v + '_base'] ?? data.pricing[v].base, perKm: ui.adm[v + '_km'] ?? data.pricing[v].perKm };

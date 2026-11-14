@@ -14,6 +14,13 @@ No dependencies. Needs Node 18+.
 - Admin sets the suggested delivery prices (starting price + per km for bike, car, van) and the commission switch and amount.
 - Addresses: search by name, drop a pin, or type the exact address and pin it; senders can add details (house number, landmark) that the courier sees. For better address search set `GOOGLE_MAPS_KEY` (Google Places API (New)), restricted to your website in Google Cloud.
 
+- Courier documents: applicants must upload a photo of their ID document and of their vehicle. The admin sees both on the application card. The ID photo is private to the courier and the admin; senders who deal with a courier can see the vehicle photo.
+- Cash or bank transfer only (no card payments). Couriers save bank details in Profile; once a deal is sealed the sender sees them with copy buttons, taps "I have paid", and the courier confirms receipt. Cash deliveries can be marked received too.
+- Recipient tracking link: the WhatsApp/SMS message to the recipient includes a link (`/track.html?t=...`) that works without logging in: live map, courier first name and vehicle, ETA, and what to pay. It shows no phone numbers or IDs and expires 3 days after delivery.
+- Proof photos: couriers can add a package photo and a delivery photo, visible to the sender and admin.
+- "Report a problem" on any delivery; reports appear in the admin screen, which can reply and close them.
+- Book again: one tap copies a past route, recipient and options into a new request.
+- Admin can edit everything: item types, popular areas, ID types, lowest and highest price, support phone and WhatsApp, which vehicle types are on offer, an announcement banner (all, senders or couriers), prices and commission; also edit a user's name, phone and plate, block or unblock senders, and cancel any live delivery.
 - Negotiated price per delivery, deal sealed when both agree; daily commission per courier.
 - Alerts: an Alerts tab with unread badge, sound and vibration while the app is open, and phone push alerts when it is closed (Android Chrome, desktop, and iPhone once added to the Home Screen). Couriers are alerted about new requests for their vehicle; senders about offers, sealed deals, pickup and delivery.
 - Delivery code: the sender gets a 4-digit code to give the recipient (WhatsApp/SMS buttons); the courier must enter it to complete the delivery. Five wrong tries lock guessing for 5 minutes.
@@ -59,4 +66,4 @@ Tiles, place search and road routing use OpenStreetMap services (tile.openstreet
 
 ## Not built yet
 
-Phone-number verification by SMS, courier document checks, in-app payments, push notifications, password reset by SMS (the admin can reset passwords for now).
+Phone-number verification by SMS, online card payments (cash and bank transfer only, by design), password reset by SMS (the admin can reset passwords for now).

@@ -389,3 +389,25 @@ img.avatar { object-fit: cover; background: var(--mint); }
 .panel.app .kv { margin-top: .6rem; }
 .tbl .row { gap: .5rem; flex-wrap: nowrap; }
 .tbl img.avatar, .tbl .avatar { width: 32px; height: 32px; font-size: .8rem; }
+
+/* ---- v5: documents, payments, tracking, admin tools ---- */
+.docpick { display: flex; gap: .9rem; align-items: center; border: 1px dashed var(--line); border-radius: var(--radius); padding: .7rem; margin-bottom: .7rem; }
+.docthumb { width: 76px; height: 76px; flex: none; border-radius: 10px; background: var(--field); display: grid; place-items: center; overflow: hidden; color: var(--muted); }
+.docthumb img { width: 100%; height: 100%; object-fit: cover; }
+.phs { display: flex; gap: .6rem; flex-wrap: wrap; }
+.ph { display: flex; flex-direction: column; gap: .25rem; width: 120px; text-decoration: none; color: inherit; }
+.ph img { width: 120px; height: 90px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
+.ph small { font-size: .72rem; color: var(--muted); }
+.ph.add { height: 90px; border: 1px dashed var(--teal); border-radius: 10px; align-items: center; justify-content: center; color: var(--teal-deep); cursor: pointer; text-align: center; }
+.bank { display: grid; gap: .5rem; margin: .5rem 0 .7rem; background: var(--mint-soft); border-radius: 10px; padding: .7rem .8rem; }
+.bank small { display: block; color: var(--muted); font-size: .72rem; }
+.bank b { font-size: .95rem; }
+.okline { color: var(--green); font-weight: 600; font-size: .85rem; margin: .3rem 0; }
+.notice.ann { display: flex; gap: .6rem; align-items: flex-start; justify-content: space-between; }
+.notice.ann .x { border: 0; background: none; font-size: 1.3rem; line-height: 1; color: var(--muted); padding: 0 .2rem; cursor: pointer; }
+.link.sm { font-size: .8rem; padding: .2rem 0; }
+textarea.input { resize: vertical; min-height: 70px; font: inherit; }
+.panel.pay .price { font-size: 1.1rem; }
+#screen.trackpage { padding: 1.2rem 1.2rem 2rem; }
+.brandbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; color: var(--teal-deep); }
+.brandbar b { font-size: 1.3rem; }
