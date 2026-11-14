@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startServer, client, RUMUOLA, MILE1, phone } = require('./helpers');
+const { startServer, client, RUMUOLA, MILE1, phone, APPLY, approve } = require('./helpers');
 const { createApp } = require('../lib/app');
 const { FileStore } = require('../lib/storage');
 const { createServer } = require('../local');
@@ -13,9 +13,10 @@ const newClient = () => client(ctx.base);
 async function register(role, name, extra = {}) {
   const c = newClient();
   const p = extra.phone || phone();
-  const r = await c.call('auth/register', { role, name, phone: p, password: 'password123', ...(role === 'driver' ? { vehicle: 'bike', plate: 'RV-123-AA' } : {}), ...extra });
+  const r = await c.call('auth/register', { role, name, phone: p, password: 'password123', ...(role === 'driver' ? { vehicle: 'bike', plate: 'RV-123-AA', ...APPLY } : {}), ...extra });
   assert.equal(r.status, 201, JSON.stringify(r.json));
   c.user = r.json.user; c.phone = p;
+  if (role === 'driver' && !extra.pending) await approve(ctx.base, c.user.id);
   return c;
 }
 async function courier(vehicle = 'bike') {
@@ -68,7 +69,7 @@ test('registration validates input and normalises phone numbers', async () => {
   // the same number written another way is a duplicate
   assert.equal((await newClient().call('auth/register', { ...ok, phone: '+2348031234567' })).status, 409);
   // the same number can hold a sender account and a courier account
-  assert.equal((await newClient().call('auth/register', { role: 'driver', name: 'Ada Obi', phone: '08031234567', password: 'longenough1', vehicle: 'car', plate: 'ABC-1' })).status, 201);
+  assert.equal((await newClient().call('auth/register', { role: 'driver', name: 'Ada Obi', phone: '08031234567', password: 'longenough1', vehicle: 'car', plate: 'ABC-1', ...APPLY })).status, 201);
 });
 
 test('login works, wrong credentials share one message, and repeated failures lock the account', async () => {

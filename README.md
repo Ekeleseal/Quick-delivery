@@ -3,12 +3,16 @@
 Book a courier in Port Harcourt, agree the price, get it delivered. An installable web app (PWA) for phones and desktops.
 
 - **Senders** pick pickup and drop-off on a real map, see the road distance, post a price. **Couriers** accept or counter. When both sides agree on a price the deal is sealed.
-- **Platform commission**: 500 naira per courier per day (charged on the first delivery of the day). The admin can change it; past entries stay as they were.
+- **Platform commission**: free for now. The admin can switch it on any time (default 500 naira per courier per day, charged on the first delivery of the day) and change the amount; past entries stay as they were.
 - **Accounts**: register and log in with phone number + password (sender or courier accounts). Admin signs in with `ADMIN_PIN`.
 
 No dependencies. Needs Node 18+.
 
 ## Features
+
+- Courier applications: couriers fill in a form (photo required, vehicle and plate, area, ID type and number, guarantor). An admin approves or rejects each one (with a reason the applicant sees and can fix) and can suspend or reinstate couriers later. Only approved couriers see requests. Senders can add an optional profile photo.
+- Admin sets the suggested delivery prices (starting price + per km for bike, car, van) and the commission switch and amount.
+- Addresses: search by name, drop a pin, or type the exact address and pin it; senders can add details (house number, landmark) that the courier sees. For better address search set `GOOGLE_MAPS_KEY` (Google Places API (New)), restricted to your website in Google Cloud.
 
 - Negotiated price per delivery, deal sealed when both agree; daily commission per courier.
 - Alerts: an Alerts tab with unread badge, sound and vibration while the app is open, and phone push alerts when it is closed (Android Chrome, desktop, and iPhone once added to the Home Screen). Couriers are alerted about new requests for their vehicle; senders about offers, sealed deals, pickup and delivery.
@@ -34,7 +38,7 @@ Vercel has no permanent disk, so the app must store data in a database or **acco
 
 1. Push this repo to GitHub and import it in Vercel.
 2. In the Vercel project: **Storage** (or Marketplace) -> add **Upstash Redis** and connect it to the project. This sets `KV_REST_API_URL` and `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`) automatically.
-3. Add environment variables: `ADMIN_PIN` (required for the admin screen), optionally `SESSION_SECRET` (any long random text), `COMMISSION_PER_DAY` (default 500).
+3. Add environment variables: `ADMIN_PIN` (required for the admin screen), optionally `SESSION_SECRET` (any long random text). Optional: `COMMISSION_PER_DAY` (amount used when commission is switched on, default 500), `COMMISSION_ACTIVE=1` (start with commission on), `GOOGLE_MAPS_KEY`.
 4. Redeploy. If storage is missing the app shows a red warning on the sign-in screen.
 
 ## Install on a phone

@@ -7,7 +7,7 @@ const http = require('http');
 const { createApp } = require('../lib/app');
 const { UpstashStore, CAS_LUA } = require('../lib/storage');
 const { createServer } = require('../local');
-const { client, RUMUOLA, MILE1, phone } = require('./helpers');
+const { client, RUMUOLA, MILE1, phone, APPLY } = require('./helpers');
 
 const TOKEN = 'test-token';
 function startMockRedis() {
@@ -32,6 +32,8 @@ function startMockRedis() {
         data.set(k1, value); data.set(k2, nextVersion);
         return reply(200, { result: 1 });
       }
+      if (cmd === 'SET') { data.set(a[0], a[1]); return reply(200, { result: 'OK' }); }
+      if (cmd === 'GET') return reply(200, { result: data.has(a[0]) ? data.get(a[0]) : null });
       return reply(400, { error: `ERR unknown command ${cmd}` });
     });
   });
@@ -103,7 +105,7 @@ test('two instances writing at once never lose each other\'s data', async () => 
 test('polling is cheap: repeated reads share one storage call', async () => {
   const A = await instance(redis.url, { cacheMs: 60000 });
   const c = client(A.base);
-  await c.call('auth/register', { role: 'driver', name: 'Poller', phone: phone(), password: 'password123', vehicle: 'bike', plate: 'RV-1' });
+  await c.call('auth/register', { role: 'driver', name: 'Poller', phone: phone(), password: 'password123', vehicle: 'bike', plate: 'RV-1', ...APPLY });
   const before = redis.stats.mget;
   for (let i = 0; i < 10; i++) assert.equal((await c.call('driver/feed')).status, 200);
   assert.equal(redis.stats.mget - before, 0); // served from the instance's short cache after the write

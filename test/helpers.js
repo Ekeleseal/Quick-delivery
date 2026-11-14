@@ -9,7 +9,7 @@ const { createServer } = require('../local');
 async function startServer({ store, config } = {}) {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bargo-')), 'data.json');
   store = store || new FileStore(file);
-  const app = createApp(store, { adminPin: '4321', ...config });
+  const app = createApp(store, { adminPin: '4321', commissionActive: true, ...config });
   const server = createServer(app);
   await new Promise((r) => server.listen(0, r));
   const base = `http://localhost:${server.address().port}`;
@@ -46,4 +46,14 @@ const MILE1 = { lat: 4.787, lng: 7.0013, label: 'Mile 1', address: 'Mile 1 Marke
 let counter = 0;
 const phone = () => '0803' + String(1000000 + ++counter).slice(-7);
 
-module.exports = { startServer, client, RUMUOLA, MILE1, phone };
+// A 1x1 picture, and the extra fields a courier application needs.
+const PHOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=';
+const APPLY = { photo: PHOTO, area: 'Rumuola, Port Harcourt', idType: 'NIN', idNumber: '12345678901', guarantorName: 'Mama Joy', guarantorPhone: '08031234567' };
+const admins = new Map();
+async function adminFor(base, pin = '4321') {
+  if (!admins.has(base)) { const a = client(base); const r = await a.call('auth/admin', { pin }); if (r.status !== 200) throw new Error('admin login failed'); admins.set(base, a); }
+  return admins.get(base);
+}
+async function approve(base, userId) { const a = await adminFor(base); const r = await a.call(`admin/users/${userId}/approval`, { action: 'approve' }); if (r.status !== 200) throw new Error('approve failed ' + JSON.stringify(r.json)); }
+
+module.exports = { startServer, client, RUMUOLA, MILE1, phone, PHOTO, APPLY, adminFor, approve };

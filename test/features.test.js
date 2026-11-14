@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
 const http = require('http');
-const { startServer, client, RUMUOLA, MILE1, phone } = require('./helpers');
+const { startServer, client, RUMUOLA, MILE1, phone, APPLY, approve } = require('./helpers');
 const push = require('../lib/push');
 const { findUpstash } = require('../lib/storage');
 
@@ -12,9 +12,10 @@ test.after(() => ctx.server.close());
 
 async function register(role, name, extra = {}) {
   const c = client(ctx.base);
-  const r = await c.call('auth/register', { role, name, phone: phone(), password: 'password123', ...(role === 'driver' ? { vehicle: 'bike', plate: 'RV-123-AA' } : {}), ...extra });
+  const r = await c.call('auth/register', { role, name, phone: phone(), password: 'password123', ...(role === 'driver' ? { vehicle: 'bike', plate: 'RV-123-AA', ...APPLY } : {}), ...extra });
   assert.equal(r.status, 201, JSON.stringify(r.json));
   c.user = r.json.user;
+  if (role === 'driver' && !extra.pending) await approve(ctx.base, c.user.id);
   return c;
 }
 const body = (over = {}) => ({ pickup: RUMUOLA, drop: MILE1, vehicle: 'bike', itemType: 'Documents', quantity: 1, recipientName: 'Ada', recipientPhone: '08123456789', payer: 'sender', payment: 'cash', openingPrice: 3000, ...over });
@@ -27,6 +28,7 @@ test('couriers who are online get an alert for a new request; senders get one fo
   const d = await register('driver', 'Notify Courier');
   const bike2 = await register('driver', 'Other Courier');
   const car = await register('driver', 'Car Courier', { vehicle: 'car' });
+  for (const c of [d, bike2, car]) await c.call('me/notifications', {}); // clear the welcome alerts
   const job = await post(s);
   const dn = await notes(d);
   assert.equal(dn.unread, 1);
