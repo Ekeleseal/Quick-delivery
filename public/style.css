@@ -411,3 +411,11 @@ textarea.input { resize: vertical; min-height: 70px; font: inherit; }
 #screen.trackpage { padding: 1.2rem 1.2rem 2rem; }
 .brandbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; color: var(--teal-deep); }
 .brandbar b { font-size: 1.3rem; }
+
+/* ---- v6: trust, safety, admin security ---- */
+.vbadge { display: inline-block; font-size: .65rem; font-weight: 600; color: var(--teal-deep); background: var(--mint); border-radius: 99px; padding: .05rem .45rem; vertical-align: middle; white-space: nowrap; }
+.panel.sos { border-color: #f0c9c4; background: #fff8f7; }
+.panel.sosbox { border: 2px solid var(--red); background: #fff1ef; }
+.panel.sosbox b { color: var(--red); }
+.refcode { font-size: 1.3rem; letter-spacing: .12em; color: var(--teal-deep); font-family: ui-monospace, Menlo, monospace; }
+details > summary { cursor: pointer; }

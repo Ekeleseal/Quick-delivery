@@ -45,7 +45,7 @@ async function call(path, body, headers = {}) {
     });
   } catch { throw Object.assign(new Error('No connection. Check your internet and try again.'), { status: 0 }); }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(json.error || `Something went wrong (server answered ${res.status}). Try again.`), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(json.error || `Something went wrong (server answered ${res.status}). Try again.`), { status: res.status, needCode: json.needCode === true });
   return json;
 }
 let toastTimer;
@@ -112,6 +112,7 @@ async function readPhoto(file, doc, cap = 420000, dim = 1000) {
   throw new Error('That picture is too large. Try another one.');
 }
 const photoInput = (kind) => `<input id="photo-${kind}" type="file" accept="image/*" ${kind === 'auth' || kind === 'app' ? 'capture="user"' : ''} hidden data-photo="${kind}">`;
+const vbadge = (d) => (d && d.verified ? '<span class="vbadge" title="Verified by Bargo: ID and vehicle checked">&#10003; Verified</span>' : '');
 const route = (j) => `${esc(j.pickup.label)} ${ic('arrow')} ${esc(j.drop.label)}`;
 const chip = (j) => `<span class="chip ${j.status}">${STATUS[j.status]}</span>`;
 const empty = (icon, msg) => `<div class="empty">${ic(icon)}<p>${msg}</p></div>`;
@@ -409,6 +410,13 @@ function photosPanel(j, role) {
   if (!a && !b) return '';
   return `<div class="panel"><p class="sub" style="margin-bottom:.5rem">Proof photos${role === 'driver' ? ' (optional, protects you both)' : ''}</p><div class="phs">${a}${b}</div></div>`;
 }
+function sosPanel(j) {
+  if (!['agreed', 'picked_up'].includes(j.status)) return '';
+  const s = meta?.support || {};
+  return `<div class="panel sos"><div class="row between"><div><b>Feeling unsafe?</b><p class="small muted" style="margin:.15rem 0 0">Tap to alert Bargo support with your location${String(ui.sosSent) === String(j.id) ? '' : '. Use it only in a real emergency.'}</p></div>
+    <button class="btn danger sm" style="width:auto;flex:none" data-act="sos" data-id="${j.id}">${String(ui.sosSent) === String(j.id) ? 'Alert sent' : 'Emergency'}</button></div>
+    ${String(ui.sosSent) === String(j.id) ? `<p class="okline">Bargo support has been told. ${s.phone ? `Call <a class="link" href="tel:${esc(s.phone)}">${esc(s.phone)}</a> or ` : ''}call 112 if you are in danger.</p>` : ''}</div>`;
+}
 const reportBtn = (j) => (['agreed', 'picked_up', 'delivered', 'cancelled'].includes(j.status) ? `<button class="link" style="margin-top:.8rem" data-act="report" data-id="${j.id}">Report a problem with this delivery</button>` : '');
 
 function codePanel(j) {
@@ -703,10 +711,11 @@ function vAuth() {
         <div class="pw"><input id="auth-pw" class="input" type="${a.show ? 'text' : 'password'}" autocomplete="${reg ? 'new-password' : 'current-password'}" placeholder="${reg ? 'At least 8 characters' : ''}" data-bind="auth.password" value="${esc(a.password ?? '')}"><button type="button" data-act="toggle-pw">${a.show ? 'Hide' : 'Show'}</button></div></div>`;
   const nameF = `<label class="field"><span>Full name</span><input class="input" maxlength="60" autocomplete="name" data-bind="auth.name" value="${esc(a.name ?? '')}"></label>`;
   const phoneF = `<label class="field"><span>Phone number</span><input class="input" type="tel" inputmode="tel" maxlength="20" autocomplete="username" placeholder="08012345678" data-bind="auth.phone" value="${esc(a.phone ?? '')}"></label>`;
+  const refF = `<label class="field"><span>Referral code (optional)</span><input class="input" maxlength="12" autocapitalize="characters" placeholder="e.g. BGK7M2X" data-bind="auth.ref" value="${esc(a.ref ?? '')}"></label>`;
   let body;
   if (!reg) body = phoneF + pw;
-  else if (!isDriver) body = nameF + phoneF + pw + `<p class="sub" style="margin:.2rem 0 .4rem">Profile photo (optional)</p>${photoPicker('auth', a.photo)}`;
-  else if (step === 1) body = nameF + phoneF + pw;
+  else if (!isDriver) body = nameF + phoneF + pw + refF + `<p class="sub" style="margin:.2rem 0 .4rem">Profile photo (optional)</p>${photoPicker('auth', a.photo)}`;
+  else if (step === 1) body = nameF + phoneF + pw + refF;
   else if (step === 2) body = `<p class="sub" style="margin-bottom:.4rem">What do you ride or drive?</p>
         <div class="vehicles">${vehList().map((v) => `<button type="button" class="vehicle" data-act="auth-veh" data-v="${v}" aria-pressed="${veh === v}">${ic(v)}${vlabel(v)}</button>`).join('')}</div>
         <label class="field"><span>Plate number</span><input class="input" maxlength="15" autocapitalize="characters" data-bind="auth.plate" value="${esc(a.plate ?? '')}"></label>`;
@@ -730,14 +739,19 @@ function vAuth() {
 }
 
 function vAdminLogin() {
-  const a = ui.admin;
+  const a = ui.admin, acct = a.mode === 'account';
+  const both = meta.adminAccounts && meta.adminPinOn;
   return `<div class="top"><button class="icon-btn" data-act="admin-back" aria-label="Back">${ic('back')}</button></div>
-    <h2 class="title">Admin</h2><p class="sub" style="margin:.3rem 0 1.1rem">Enter the admin PIN.</p>
+    <h2 class="title">Admin</h2><p class="sub" style="margin:.3rem 0 1.1rem">${acct ? 'Sign in with your admin account.' : 'Enter the admin PIN.'}</p>
     <form data-form="admin-login">
-      <label class="field"><span>PIN</span><input class="input" type="password" inputmode="numeric" autocomplete="off" data-bind="admin.pin" value="${esc(a.pin ?? '')}"></label>
+      ${acct ? `<label class="field"><span>Username</span><input class="input" autocomplete="username" autocapitalize="none" maxlength="30" data-bind="admin.username" value="${esc(a.username ?? '')}"></label>
+        <label class="field"><span>Password</span><input class="input" type="password" autocomplete="current-password" data-bind="admin.password" value="${esc(a.password ?? '')}"></label>
+        ${a.needCode ? `<label class="field"><span>6-digit code from your authenticator app</span><input class="input codein" inputmode="numeric" autocomplete="one-time-code" maxlength="6" data-bind="admin.code" value="${esc(a.code ?? '')}"></label>` : ''}`
+      : `<label class="field"><span>PIN</span><input class="input" type="password" inputmode="numeric" autocomplete="off" data-bind="admin.pin" value="${esc(a.pin ?? '')}"></label>`}
       ${a.error ? `<p class="err" role="alert">${esc(a.error)}</p>` : ''}
-      <button class="btn" type="submit" style="margin-top:.6rem">Open admin</button>
-    </form>`;
+      <button class="btn" type="submit" style="margin-top:.6rem">${acct && a.needCode ? 'Verify and open admin' : 'Open admin'}</button>
+    </form>
+    ${both ? `<p class="help"><button class="link" data-act="admin-mode" data-mode="${acct ? 'pin' : 'account'}">${acct ? 'Use the owner PIN instead' : 'Use my admin account'}</button></p>` : ''}`;
 }
 
 // ---------- Views: sender ----------
@@ -837,7 +851,7 @@ function offerCardS(j, n) {
   const turn = n.status === 'active' && n.turn === 'sender';
   const d = n.driver;
   let h = `<section class="offer ${turn ? 'turn' : ''} ${n.status !== 'active' ? 'dead' : ''}">
-    <div class="row">${avatar(d)}<div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars (${d.ratingCount})</small></div>${ic(d.vehicle)}</div>
+    <div class="row">${avatar(d)}<div class="grow"><b>${esc(d.name)}</b> ${vbadge(d)}<br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars (${d.ratingCount})</small></div>${ic(d.vehicle)}</div>
     ${thread(n.history, 'sender')}`;
   if (n.status === 'active' && turn) {
     const open = ui.open[key];
@@ -885,10 +899,10 @@ function vSJob() {
     const d = j.driver;
     h += sealedBanner(j, j.status === 'delivered' ? 'Delivered. Thank you for using Bargo.' : `You pay ${j.payment === 'cash' ? 'cash' : 'by bank transfer'} to the courier.`);
     h += progress(j);
-    h += `<div class="panel"><div class="row">${avatar(d)}<div class="grow"><b>${esc(d.name)}</b><br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars</small></div>
+    h += `<div class="panel"><div class="row">${avatar(d)}<div class="grow"><b>${esc(d.name)}</b> ${vbadge(d)}<br><small class="muted">${esc(vlabel(d.vehicle))}, ${esc(d.plate)}, ${d.rating.toFixed(1)} stars</small></div>
       ${['agreed', 'picked_up'].includes(j.status) ? `<button class="btn sm" style="width:auto;margin-right:.4rem" data-act="call-start" data-id="${j.id}" aria-label="Call ${esc(d.name)} in the app">${ic('mic')} Call</button>` : ''}
       <a class="btn line sm" style="width:auto;text-decoration:none" href="tel:${esc(d.phone)}" aria-label="Call ${esc(d.name)} by phone">${ic('phone')}</a></div></div>`;
-    h += payPanel(j, 'sender') + codePanel(j) + chatPanel(j) + photosPanel(j, 'sender');
+    h += payPanel(j, 'sender') + codePanel(j) + chatPanel(j) + photosPanel(j, 'sender') + sosPanel(j);
     const sealed = j.negotiations.find((n) => n.status === 'sealed');
     if (sealed) h += `<p class="h3">How you agreed</p>${thread(sealed.history, 'sender')}`;
     if (j.status === 'delivered') {
@@ -979,7 +993,7 @@ function vDJob() {
       <div class="row between" style="margin-top:.4rem"><span>Sender: <b>${esc(j.senderName)}</b></span>${j.senderPhone ? `<a class="link" href="tel:${esc(j.senderPhone)}">${esc(j.senderPhone)}</a>` : ''}</div>
       <div class="row between" style="margin-top:.4rem"><span>Recipient: <b>${esc(j.recipientName)}</b></span><a class="link" href="tel:${esc(j.recipientPhone)}">${esc(j.recipientPhone)}</a></div></div>`;
     if (['agreed', 'picked_up'].includes(j.status)) h += `<button class="btn" style="margin-bottom:.6rem" data-act="call-start" data-id="${j.id}">${ic('mic')} Call ${esc(j.senderName.split(' ')[0])} in the app</button><a class="btn line" style="text-decoration:none;margin-bottom:.7rem" target="_blank" rel="noopener" href="${mapsLink(j.status === 'agreed' ? j.pickup : j.drop)}">${ic('nav')} Navigate to ${j.status === 'agreed' ? 'pickup' : 'drop-off'}</a>${ui.geoDenied ? '<p class="notice">Turn on location for Bargo so the sender can follow your trip.</p>' : '<p class="small muted" style="margin:-.3rem 0 .7rem">The sender can follow you on the map while this app is open.</p>'}` + chatPanel(j);
-    h += payPanel(j, 'driver') + photosPanel(j, 'driver');
+    h += payPanel(j, 'driver') + photosPanel(j, 'driver') + sosPanel(j);
     if (j.status === 'agreed') h += `<button class="btn" data-act="d-pickup" data-id="${j.id}">I have picked up the package</button><button class="link" style="margin-top:.7rem" data-act="d-withdraw" data-id="${j.id}">Pull out of this delivery</button>`;
     if (j.status === 'picked_up') h += `<form class="panel" data-form="deliver" data-id="${j.id}"><p class="sub" style="margin-bottom:.5rem">Ask ${esc(j.recipientName)} for the 4-digit delivery code</p>
       <div class="row"><input class="input codein" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" placeholder="0000" aria-label="Delivery code" data-bind="dc.code" value="${esc(ui.dc.code ?? '')}"><button class="btn inline" type="submit" style="width:auto">Complete delivery</button></div></form>`;
@@ -1036,6 +1050,12 @@ function vProfile() {
       <label class="field"><span>Account name</span><input class="input" maxlength="60" data-bind="bk.accountName" value="${esc(k.accountName ?? b.accountName ?? '')}"></label></div>
       ${ui.bkErr ? `<p class="err" role="alert">${esc(ui.bkErr)}</p>` : ''}<button class="btn sm inline" type="submit">Save bank details</button></form>`;
   }
+  if (me.refCode) {
+    const msg = `Join me on Bargo, the delivery app where you set the price. Use my code ${me.refCode} when you sign up: ${location.origin}/?ref=${me.refCode}`;
+    h += `<div class="panel ref"><p class="sub" style="margin-bottom:.4rem">Invite friends</p><div class="row between"><b class="refcode">${esc(me.refCode)}</b>${copyBtn(me.refCode)}</div>
+      <p class="small muted" style="margin:.3rem 0 .6rem">${me.refCount ? `${me.refCount} ${me.refCount === 1 ? 'person has' : 'people have'} joined with your code.` : 'Share your code. When friends sign up with it, we tell you.'}</p>
+      <a class="btn line sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">Share on WhatsApp</a></div>`;
+  }
   h += supportBlock();
   h += `<form class="panel" data-form="pw"><p class="sub" style="margin-bottom:.6rem">Change password</p>
     <label class="field"><span>Current password</span><input class="input" type="password" autocomplete="current-password" data-bind="pw.current" value="${esc(ui.pw.current ?? '')}"></label>
@@ -1069,6 +1089,53 @@ function siteForm() {
     <label class="field"><span>Who sees it</span><select class="input" data-bind="adm.site_annAud">${[['all', 'Everyone'], ['senders', 'Senders only'], ['couriers', 'Couriers only']].map(([v, l]) => `<option value="${v}" ${g('annAud', st.announcement.audience) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <button class="btn sm inline" type="submit">Save settings</button></form>`;
 }
+const when = (ts) => fmtDate(ts);
+function sosBanner() {
+  const open = (data.sos || []).filter((x) => x.status === 'open');
+  if (!open.length) return '';
+  return open.map((x) => `<article class="panel sosbox" role="alert"><div class="row between"><b>EMERGENCY: ${esc(x.name)} (${x.role === 'driver' ? 'courier' : 'sender'}) on delivery #${x.jobId}</b><small>${when(x.at)}${x.pressed > 1 ? `, pressed ${x.pressed} times` : ''}</small></div>
+    <p class="small" style="margin:.3rem 0">${x.job ? esc(x.job.pickup) + ' to ' + esc(x.job.drop) : ''}${x.other ? `. Other person: ${esc(x.other.name)} <a class="link" href="tel:${esc(x.other.phone)}">${esc(x.other.phone)}</a>` : ''}</p>
+    <div class="btns"><a class="btn sm" href="tel:${esc(x.phone)}" style="text-decoration:none">Call ${esc(x.name.split(' ')[0])} ${esc(x.phone)}</a>${x.lat != null ? `<a class="btn line sm" target="_blank" rel="noopener" href="https://www.google.com/maps?q=${x.lat},${x.lng}" style="text-decoration:none">${ic('pin')} Open location</a>` : '<span class="small muted">No location shared</span>'}</div>
+    <button class="btn line sm inline" style="margin-top:.5rem" data-act="admin-sos-close" data-id="${x.id}">Mark handled</button></article>`).join('');
+}
+function broadcastForm() {
+  const a = ui.adm, aud = a.bc_aud ?? 'all';
+  return `<form class="panel" data-form="admin-broadcast"><p class="sub" style="margin-bottom:.6rem"><b>Send a message to users</b>: appears in their Alerts and as a phone notification</p>
+    <label class="field"><span>Title</span><input class="input" maxlength="60" placeholder="e.g. Weekend promo" data-bind="adm.bc_title" value="${esc(a.bc_title ?? '')}"></label>
+    <label class="field"><span>Message (up to 240 characters)</span><textarea class="input" rows="3" maxlength="240" data-bind="adm.bc_body">${esc(a.bc_body ?? '')}</textarea></label>
+    <label class="field"><span>Send to</span><select class="input" data-bind="adm.bc_aud">${[['all', 'Everyone'], ['senders', 'Senders only'], ['couriers', 'Couriers only']].map(([v, l]) => `<option value="${v}" ${aud === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="check"><input type="checkbox" data-bind="adm.bc_banner" ${a.bc_banner ? 'checked' : ''}> <span>Also show it as a banner on the Home screen</span></label>
+    <button class="btn sm inline" type="submit">Send now</button>
+    ${(data.broadcasts || []).length ? `<details class="small" style="margin-top:.6rem"><summary>Sent recently</summary>${data.broadcasts.map((b) => `<p style="margin:.3rem 0"><b>${esc(b.title)}</b> to ${esc(b.audience)} (${b.count}) <small class="muted">${when(b.at)} by ${esc(b.by)}</small><br>${esc(b.body)}</p>`).join('')}</details>` : ''}</form>`;
+}
+function securityPanel() {
+  const m = data.me, a = ui.adm, tf = ui.tf;
+  let h = `<div class="panel"><p class="sub" style="margin-bottom:.4rem"><b>Your admin sign-in</b>: ${esc(m.name)} (${m.adminRole === 'owner' ? 'owner' : 'support'})</p>`;
+  if (m.pin) h += '<p class="small">You are signed in with the shared owner PIN. Create your own account below, sign in with it, and then turn the PIN off. That adds a personal password, two-step codes and a record of who did what.</p>';
+  else {
+    h += m.totpOn ? `<p class="okline">Two-step sign-in is on.</p><button class="btn line sm inline" data-act="tf-off">Turn off</button>`
+      : tf ? `<p class="small">1. In an authenticator app (Google Authenticator, Authy, Microsoft Authenticator) add an account by key and type this key:</p><p class="refcode" style="font-size:1rem;word-break:break-all">${esc(tf.secret)}</p><p class="small muted">On a phone you can also <a class="link" href="${esc(tf.uri)}">open it in your authenticator app</a>.</p>
+        <p class="small" style="margin-top:.5rem">2. Enter the 6-digit code it shows:</p><div class="row"><input class="input codein" inputmode="numeric" maxlength="6" data-bind="tf.code" value="${esc(tf.code ?? '')}" aria-label="6-digit code"><button class="btn sm inline" style="width:auto" data-act="tf-enable">Turn on</button></div>${tf.error ? `<p class="err">${esc(tf.error)}</p>` : ''}`
+        : '<p class="small">Add a second step: after your password, sign-in also asks for a code from your phone.</p><button class="btn line sm inline" data-act="tf-begin">Set up two-step sign-in</button>';
+    h += `<div class="two" style="margin-top:.8rem"><label class="field"><span>Current password</span><input class="input" type="password" autocomplete="current-password" data-bind="adm.pw_cur" value="${esc(a.pw_cur ?? '')}"></label>
+      <label class="field"><span>New password</span><input class="input" type="password" autocomplete="new-password" data-bind="adm.pw_new" value="${esc(a.pw_new ?? '')}"></label></div><button class="btn line sm inline" data-act="adm-mypw">Change my password</button>`;
+  }
+  return h + '</div>';
+}
+function teamPanel() {
+  const a = ui.adm;
+  return `<div class="panel"><p class="sub" style="margin-bottom:.5rem"><b>Admin team</b>: owners can change everything; support staff handle approvals, reports, emergencies and users</p>
+    <div class="tbl-wrap"><table class="tbl"><tr><th>Person</th><th>Role</th><th>2-step</th><th></th></tr>
+    ${data.admins.map((x) => `<tr><td><b>${esc(x.name)}</b><br><small class="muted">${esc(x.username)}${x.lastLoginAt ? ', last in ' + when(x.lastLoginAt) : ''}</small></td><td>${x.adminRole === 'owner' ? 'Owner' : 'Support'}</td><td>${x.totpOn ? 'On' : 'Off'}</td>
+      <td><button class="btn line sm inline" data-act="adm-role" data-id="${esc(x.id)}" data-role="${x.adminRole === 'owner' ? 'support' : 'owner'}">Make ${x.adminRole === 'owner' ? 'support' : 'owner'}</button> <button class="btn line sm inline" data-act="adm-pw" data-id="${esc(x.id)}" data-name="${esc(x.name)}">New password</button>${x.totpOn ? ` <button class="btn line sm inline" data-act="adm-2fa-reset" data-id="${esc(x.id)}" data-name="${esc(x.name)}">Reset 2-step</button>` : ''} <button class="btn danger sm inline" data-act="adm-remove" data-id="${esc(x.id)}" data-name="${esc(x.name)}">Remove</button></td></tr>`).join('') || '<tr><td colspan="4" class="muted">No admin accounts yet. Add yourself first.</td></tr>'}</table></div>
+    <form data-form="admin-add" style="margin-top:.8rem"><p class="sub" style="margin-bottom:.3rem">Add an admin</p>
+      <div class="two"><label class="field"><span>Name</span><input class="input" maxlength="60" data-bind="adm.nu_name" value="${esc(a.nu_name ?? '')}"></label><label class="field"><span>Username</span><input class="input" maxlength="30" autocapitalize="none" data-bind="adm.nu_user" value="${esc(a.nu_user ?? '')}"></label></div>
+      <div class="two"><label class="field"><span>Password (8+ characters)</span><input class="input" type="password" autocomplete="new-password" data-bind="adm.nu_pw" value="${esc(a.nu_pw ?? '')}"></label><label class="field"><span>Role</span><select class="input" data-bind="adm.nu_role"><option value="support" ${(a.nu_role ?? 'support') === 'support' ? 'selected' : ''}>Support</option><option value="owner" ${a.nu_role === 'owner' ? 'selected' : ''}>Owner</option></select></label></div>
+      <button class="btn sm inline" type="submit">Add admin</button></form>
+    <div class="btns" style="margin-top:.8rem">${data.pinEnabled ? '<button class="btn line sm" data-act="adm-pin" data-off="1">Turn off PIN sign-in</button>' : '<button class="btn line sm" data-act="adm-pin" data-off="0">Turn PIN sign-in back on</button>'}<button class="btn danger sm" data-act="adm-signout-all">Sign everyone out</button></div>
+    <p class="small muted" style="margin-top:.4rem">PIN sign-in is the shared ADMIN_PIN. Turn it off once every admin has their own account. "Sign everyone out" ends all admin sessions, including yours.</p>
+    <details style="margin-top:.8rem"><summary class="sub">Activity log (who did what)</summary><div class="tbl-wrap"><table class="tbl"><tr><th>When</th><th>Who</th><th>What</th></tr>${data.audit.map((l) => `<tr><td>${when(l.at)}</td><td>${esc(l.by)}</td><td>${esc(l.action)}${l.detail ? `<br><small class="muted">${esc(l.detail)}</small>` : ''}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing yet.</td></tr>'}</table></div></details></div>`;
+}
 function reportsPanel() {
   const open = data.reports.filter((r) => r.status === 'open'), done = data.reports.filter((r) => r.status !== 'open').slice(0, 5);
   const row = (r) => `<article class="panel"><div class="row between"><b>Delivery #${r.jobId}</b><small class="muted">${fmtDate(r.at)}</small></div>
@@ -1092,7 +1159,7 @@ function pendingApps() {
 function vAdmin() {
   const head = `<div class="top"><button class="icon-btn" data-act="logout" aria-label="Log out of admin">${ic('back')}</button><h2 class="title grow">Admin</h2></div>`;
   if (!data) return `<div class="admin">${head}<p class="empty">Loading...</p></div>`;
-  const t = data.totals;
+  const t = data.totals, isOwner = data.me?.adminRole === 'owner';
   const editBtn = (u, role) => `<button class="btn line sm inline" data-act="admin-edit" data-id="${esc(u.id)}" data-name="${esc(u.name)}" data-phone="${esc(u.phone)}" data-plate="${esc(u.plate || '')}" data-role="${role}">Edit</button> `;
   const reset = (u) => `<button class="btn line sm inline" data-act="admin-reset" data-id="${esc(u.id)}" data-name="${esc(u.name)}">Reset password</button>`;
   return `<div class="admin">${head}
@@ -1100,20 +1167,25 @@ function vAdmin() {
     <div class="stats"><div class="stat dark"><b>${money(t.commission)}</b><small>Commission collected</small></div><div class="stat"><b>${money(t.dealValue)}</b><small>Deal value delivered</small></div>
       <div class="stat"><b>${t.delivered}</b><small>Delivered</small></div><div class="stat"><b>${t.active}</b><small>On the road</small></div><div class="stat"><b>${t.open}</b><small>Open for offers</small></div>
       <div class="stat"><b>${t.couriers}</b><small>Couriers</small></div><div class="stat"><b>${t.senders}</b><small>Senders</small></div></div>
+    ${sosBanner()}
     ${pendingApps()}
     ${reportsPanel()}
-    <form class="panel" data-form="admin-save"><p class="sub">Daily commission per courier</p>
+    ${isOwner ? broadcastForm() : ''}
+    <form class="panel" data-form="admin-save" ${isOwner ? '' : 'hidden'}><p class="sub">Daily commission per courier</p>
       <label class="check"><input type="checkbox" data-bind="adm.active" ${(ui.adm.active ?? data.settings.commissionActive) ? 'checked' : ''}> <span>Charge commission${(ui.adm.active ?? data.settings.commissionActive) ? '' : ' (off: couriers keep the full price)'}</span></label>
       <div class="row" style="margin-top:.4rem"><input class="input" inputmode="numeric" data-num="1" data-bind="adm.commission" value="${esc(ui.adm.commission ?? data.settings.commissionPerDay)}" style="max-width:180px" aria-label="Daily commission in naira"><button class="btn sm inline" type="submit">Save</button></div>
       <p class="sub" style="margin-top:.5rem">When on, charged once per courier on their first delivery of each day. Changes apply to later days. Past charges stay as they were. The amount is kept while commission is off.</p></form>
-    <form class="panel" data-form="admin-prices"><p class="sub">Delivery prices (suggested to senders)</p>
+    <form class="panel" data-form="admin-prices" ${isOwner ? '' : 'hidden'}><p class="sub">Delivery prices (suggested to senders)</p>
       <div class="tbl-wrap"><table class="tbl"><tr><th>Vehicle</th><th>Starting price</th><th>Per km</th></tr>
       ${['bike', 'car', 'van'].map((v) => `<tr><td><b>${vlabel(v)}</b></td><td><input class="input" inputmode="numeric" data-num="1" data-bind="adm.${v}_base" value="${esc(ui.adm[v + '_base'] ?? data.pricing[v].base)}" aria-label="${vlabel(v)} starting price"></td><td><input class="input" inputmode="numeric" data-num="1" data-bind="adm.${v}_km" value="${esc(ui.adm[v + '_km'] ?? data.pricing[v].perKm)}" aria-label="${vlabel(v)} price per km"></td></tr>`).join('')}</table></div>
       <button class="btn sm inline" type="submit" style="margin-top:.5rem">Save prices</button>
       <p class="sub" style="margin-top:.5rem">Senders still choose their own price and couriers can counter. These only set the suggested starting price: starting price plus the rate per km of road distance.</p></form>
-    ${siteForm()}
+    ${isOwner ? siteForm() : ''}
+    ${securityPanel()}
+    ${isOwner ? teamPanel() : ''}
+    ${(data.referrals || []).length ? `<p class="h3">Top referrers</p><div class="tbl-wrap"><table class="tbl"><tr><th>Person</th><th>Code</th><th>Joined</th></tr>${data.referrals.map((r) => `<tr><td>${esc(r.name)}<br><small class="muted">${esc(r.phone)}</small></td><td>${esc(r.refCode)}</td><td>${r.refCount}</td></tr>`).join('')}</table></div>` : ''}
     <div class="cols"><div><p class="h3">Couriers</p><div class="tbl-wrap"><table class="tbl"><tr><th>Courier</th><th>Status</th><th>Trips</th><th></th></tr>
-      ${data.drivers.filter((d) => d.approval !== 'pending').map((d) => `<tr><td><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b><br><small class="muted">${esc(d.phone)}, ${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></div></div></td><td>${esc(d.approval === 'approved' ? d.status : d.approval)}</td><td>${d.completed}</td><td>${editBtn(d, 'driver')}${d.approval === 'approved' ? `<button class="btn line sm inline" data-act="admin-suspend" data-id="${esc(d.id)}" data-name="${esc(d.name)}">Suspend</button>` : d.approval === 'suspended' ? `<button class="btn line sm inline" data-act="admin-reinstate" data-id="${esc(d.id)}">Reinstate</button>` : ''} ${reset(d)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No couriers yet.</td></tr>'}</table></div></div>
+      ${data.drivers.filter((d) => d.approval !== 'pending').map((d) => `<tr><td><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b> ${vbadge(d)}<br><small class="muted">${esc(d.phone)}, ${esc(vlabel(d.vehicle))}, ${esc(d.plate)}</small></div></div></td><td>${esc(d.approval === 'approved' ? d.status : d.approval)}</td><td>${d.completed}</td><td>${editBtn(d, 'driver')}${d.approval === 'approved' ? `<button class="btn line sm inline" data-act="admin-verify" data-id="${esc(d.id)}" data-on="${d.verified ? 0 : 1}">${d.verified ? 'Remove badge' : 'Verify'}</button> ` : ''}${d.approval === 'approved' ? `<button class="btn line sm inline" data-act="admin-suspend" data-id="${esc(d.id)}" data-name="${esc(d.name)}">Suspend</button>` : d.approval === 'suspended' ? `<button class="btn line sm inline" data-act="admin-reinstate" data-id="${esc(d.id)}">Reinstate</button>` : ''} ${reset(d)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No couriers yet.</td></tr>'}</table></div></div>
     <div><p class="h3">Senders</p><div class="tbl-wrap"><table class="tbl"><tr><th>Sender</th><th>Deliveries</th><th></th></tr>
       ${data.senders.map((u) => `<tr><td><div class="row">${avatar(u)}<div><b>${esc(u.name)}</b><br><small class="muted">${esc(u.phone)}</small></div></div></td><td>${u.jobs}${u.blocked ? ' <span class="chip cancelled">Blocked</span>' : ''}</td><td>${editBtn(u, 'sender')}<button class="btn line sm inline" data-act="admin-block" data-id="${esc(u.id)}" data-name="${esc(u.name)}" data-on="${u.blocked ? 0 : 1}">${u.blocked ? 'Unblock' : 'Block'}</button> ${reset(u)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No senders yet.</td></tr>'}</table></div></div></div>
     <p class="h3">Recent deliveries</p><div class="tbl-wrap"><table class="tbl"><tr><th>#</th><th>Route</th><th>Distance</th><th>Price</th><th>Status</th><th></th></tr>
@@ -1193,7 +1265,13 @@ async function pull(fresh) {
     $('#offline').hidden = true;
     handleNotes(next.notes);
     const s = JSON.stringify(next);
-    if (s !== dsig) { data = next; dsig = s; render(); }
+    if (s !== dsig) {
+      if (me.role === 'admin') { // an emergency alert should never go unnoticed
+        const seen = new Set((data?.sos || []).map((x) => x.id + ':' + x.pressed)), fresh = (next.sos || []).filter((x) => x.status === 'open' && !seen.has(x.id + ':' + x.pressed));
+        if (data && fresh.length) { chime(); setTimeout(chime, 600); toast(`EMERGENCY: ${fresh[0].name} on delivery #${fresh[0].jobId}`, true); }
+      }
+      data = next; dsig = s; render();
+    }
     syncTracking();
     checkIncoming();
     if (pendingJob && me.role !== 'admin') { const id = pendingJob; pendingJob = null; if (findJob(id)) go('job', { id }); }
@@ -1216,12 +1294,13 @@ async function startSession(user) {
 
 // ---------- Actions ----------
 const ACT = {
-  'auth-start': ({ role }) => { ui.auth = { role, mode: 'login', step: 1, phone: ls.get('phone'), password: '', name: '', vehicle: 'bike', plate: '', photo: '', area: '', idType: '', idNumber: '', guarantorName: '', guarantorPhone: '', idPhoto: '', vehiclePhoto: '', show: false, error: '', busy: false }; render(true); },
+  'auth-start': ({ role }) => { ui.auth = { role, mode: 'login', step: 1, phone: ls.get('phone'), password: '', name: '', vehicle: 'bike', plate: '', photo: '', area: '', idType: '', idNumber: '', guarantorName: '', guarantorPhone: '', idPhoto: '', vehiclePhoto: '', ref: (new URLSearchParams(location.search).get('ref') || '').toUpperCase().slice(0, 12), show: false, error: '', busy: false }; render(true); },
   'auth-back': () => { const a = ui.auth; if (a.mode === 'register' && a.role === 'driver' && (a.step || 1) > 1) { a.step -= 1; a.error = ''; render(true); } else if (a.mode === 'register' && a.role === 'driver') { a.mode = 'login'; a.error = ''; render(true); } else { ui.auth = null; render(true); } },
   'auth-mode': ({ mode }) => { ui.auth.mode = mode; ui.auth.step = 1; ui.auth.error = ''; render(true); },
   'auth-veh': ({ v }) => { ui.auth.vehicle = v; render(); },
   'toggle-pw': () => { ui.auth.show = !ui.auth.show; render(); },
-  'admin-start': () => { ui.admin = { pin: '', error: '' }; render(true); },
+  'admin-start': () => { ui.admin = { mode: meta.adminAccounts ? 'account' : 'pin', pin: '', username: '', password: '', code: '', needCode: false, error: '' }; render(true); },
+  'admin-mode': ({ mode }) => { ui.admin.mode = mode; ui.admin.error = ''; ui.admin.needCode = false; render(true); },
   'admin-back': () => { ui.admin = null; render(true); },
   logout: async () => { if (me && me.role !== 'admin') await dropPush(); try { await call('auth/logout', {}); } catch { /* signing out locally anyway */ } signedOut(); },
   tab: ({ tab: t }) => { tab(t); if (t === 'alerts' && data?.notes?.unread) setTimeout(() => nav.cur.name === 'alerts' && markRead(), 1500); },
@@ -1307,6 +1386,23 @@ const ACT = {
   'd-pickup': ({ id }) => run(() => call(`jobs/${id}/driver/pickup`, {}), 'Marked as picked up.'),
   'd-withdraw': ({ id }) => { if (confirm('Pull out? The delivery goes back to other couriers.')) run(async () => { await call(`jobs/${id}/driver/withdraw`, {}); back(); }); },
   'admin-reset': ({ id, name }) => { if (confirm(`Reset the password for ${name}? Their current sessions will end.`)) run(async () => { const r = await call(`admin/users/${id}/reset`, {}); ui.tempPw = { name: r.name, phone: r.phone, password: r.tempPassword }; }); },
+  sos: ({ id }) => {
+    if (!confirm('Send an emergency alert to Bargo support? They will see your location and this delivery.')) return;
+    const send = (pos) => run(async () => { await call(`jobs/${id}/panic`, pos ? { lat: pos.coords.latitude, lng: pos.coords.longitude } : {}); ui.sosSent = id; }, 'Emergency alert sent to Bargo support.');
+    if (navigator.geolocation) navigator.geolocation.getCurrentPosition(send, () => send(null), { timeout: 4000, maximumAge: 20000 }); else send(null);
+  },
+  'admin-sos-close': ({ id }) => { const note = prompt('Note on how this was handled (optional):', ''); if (note !== null) run(() => call(`admin/sos/${id}/resolve`, { note: note.trim() }), 'Emergency marked as handled.'); },
+  'admin-verify': ({ id, on }) => run(() => call(`admin/users/${id}/verify`, { verified: on === '1' }), on === '1' ? 'Verified badge given.' : 'Badge removed.'),
+  'tf-begin': () => run(async () => { ui.tf = { ...(await call('admin/me/2fa', { action: 'begin' })), code: '' }; }),
+  'tf-enable': () => run(async () => { try { await call('admin/me/2fa', { action: 'enable', code: ui.tf?.code || '' }); ui.tf = null; me = (await call('me')).user; toast('Two-step sign-in is on.'); } catch (e) { ui.tf = { ...ui.tf, error: e.message }; } }),
+  'tf-off': () => { const pw = prompt('Enter your password to turn off two-step sign-in:'); if (pw) run(async () => { await call('admin/me/2fa', { action: 'disable', password: pw }); ui.tf = null; }, 'Two-step sign-in is off.'); },
+  'adm-mypw': () => run(async () => { await call('admin/me/password', { current: ui.adm.pw_cur || '', next: ui.adm.pw_new || '' }); ui.adm.pw_cur = ''; ui.adm.pw_new = ''; }, 'Password changed.'),
+  'adm-role': ({ id, role }) => { if (confirm(`Change this admin to ${role}? They are signed out and must sign in again.`)) run(() => call(`admin/admins/${id}/update`, { adminRole: role }), 'Role changed.'); },
+  'adm-pw': ({ id, name }) => { const pw = prompt(`New password for ${name} (8 or more characters). They are signed out everywhere.`); if (pw) run(() => call(`admin/admins/${id}/update`, { password: pw }), 'Password set.'); },
+  'adm-2fa-reset': ({ id, name }) => { if (confirm(`Turn off two-step sign-in for ${name}? Use this if they lost their phone.`)) run(() => call(`admin/admins/${id}/update`, { reset2fa: true }), 'Two-step sign-in reset.'); },
+  'adm-remove': ({ id, name }) => { if (confirm(`Remove ${name} as an admin?`)) run(() => call(`admin/admins/${id}/update`, { remove: true }), 'Admin removed.'); },
+  'adm-pin': ({ off }) => { if (off !== '1' || confirm('Turn off PIN sign-in? Only named admin accounts will be able to sign in.')) run(() => call('admin/pin', { disabled: off === '1' }).then(() => { meta.adminPinOn = off !== '1'; }), off === '1' ? 'PIN sign-in is off.' : 'PIN sign-in is on.'); },
+  'adm-signout-all': () => { if (confirm('Sign every admin out, including you?')) (async () => { try { await call('admin/signout-all', {}); } catch (e) { return toast(e.message, true); } signedOut('All admin sessions were ended.'); })(); },
   copy: ({ text }) => { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => toast('Copied.'), () => toast('Could not copy. Press and hold to copy it yourself.', true)); },
   'ann-hide': () => { ls.set('bargo_ann', meta.announcement.text); render(); },
   'pay-sent': ({ id }) => { if (confirm('Confirm that you have sent the money by transfer?')) run(() => call(`jobs/${id}/payment`, { action: 'sent' }), 'Thanks. The courier will confirm.'); },
@@ -1413,7 +1509,7 @@ async function submitAuth() {
   a.busy = true; render();
   try {
     const body = { role: a.role, phone: a.phone, password: a.password };
-    if (reg) { body.name = a.name; if (a.photo) body.photo = a.photo; }
+    if (reg) { body.name = a.name; if (a.photo) body.photo = a.photo; if ((a.ref || '').trim()) body.ref = a.ref.trim(); }
     if (reg && isD) Object.assign(body, { vehicle: a.vehicle || 'bike', plate: a.plate, area: a.area, idType: a.idType, idNumber: a.idNumber, guarantorName: a.guarantorName, guarantorPhone: a.guarantorPhone, idPhoto: a.idPhoto, vehiclePhoto: a.vehiclePhoto });
     const r = await call(reg ? 'auth/register' : 'auth/login', body);
     ls.set('phone', a.phone);
@@ -1452,8 +1548,9 @@ document.addEventListener('submit', (e) => {
   else if (f === 'deliver') run(async () => { await call(`jobs/${e.target.dataset.id}/driver/deliver`, { code: ui.dc.code || '' }); ui.dc = {}; }, 'Delivery complete.');
   else if (f === 'admin-login') {
     (async () => {
-      try { const r = await call('auth/admin', { pin: ui.admin.pin }); await startSession(r.user); }
-      catch (err) { ui.admin.error = err.message; ui.admin.pin = ''; render(); }
+      const a = ui.admin;
+      try { const r = await call('auth/admin', a.mode === 'account' ? { username: a.username, password: a.password, code: a.needCode ? a.code : undefined } : { pin: a.pin }); await startSession(r.user); }
+      catch (err) { a.error = err.message; a.pin = ''; if (err.needCode) a.needCode = true; else a.password = ''; a.code = ''; render(); }
     })();
   } else if (f === 'admin-save') run(async () => { await call('admin/settings', { commissionPerDay: ui.adm.commission ?? data.settings.commissionPerDay, commissionActive: ui.adm.active ?? data.settings.commissionActive }); ui.adm = {}; }, 'Commission settings saved.');
   else if (f === 'admin-site') run(async () => {
@@ -1465,6 +1562,17 @@ document.addEventListener('submit', (e) => {
     } });
     ui.adm = {}; meta = await call('meta');
   }, 'Settings saved.');
+  else if (f === 'admin-broadcast') run(async () => {
+    const a = ui.adm;
+    if (!confirm(`Send this to ${{ all: 'everyone', senders: 'all senders', couriers: 'all couriers' }[a.bc_aud ?? 'all']}?`)) return;
+    await call('admin/broadcast', { title: a.bc_title || '', body: a.bc_body || '', audience: a.bc_aud ?? 'all', banner: !!a.bc_banner });
+    ui.adm.bc_title = ''; ui.adm.bc_body = ''; ui.adm.bc_banner = false; meta = await call('meta'); toast('Message sent.');
+  });
+  else if (f === 'admin-add') run(async () => {
+    const a = ui.adm;
+    await call('admin/admins', { name: a.nu_name || '', username: a.nu_user || '', password: a.nu_pw || '', adminRole: a.nu_role ?? 'support' });
+    ['nu_name', 'nu_user', 'nu_pw', 'nu_role'].forEach((k) => delete ui.adm[k]);
+  }, 'Admin added.');
   else if (f === 'admin-prices') run(async () => {
     const pricing = {};
     for (const v of ['bike', 'car', 'van']) pricing[v] = { base: ui.adm[v + '_base'] ?? data.pricing[v].base, perKm: ui.adm[v + '_km'] ?? data.pricing[v].perKm };

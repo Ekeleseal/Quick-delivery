@@ -21,6 +21,11 @@ No dependencies. Needs Node 18+.
 - "Report a problem" on any delivery; reports appear in the admin screen, which can reply and close them.
 - Book again: one tap copies a past route, recipient and options into a new request.
 - Admin can edit everything: item types, popular areas, ID types, lowest and highest price, support phone and WhatsApp, which vehicle types are on offer, an announcement banner (all, senders or couriers), prices and commission; also edit a user's name, phone and plate, block or unblock senders, and cancel any live delivery.
+- Admin accounts and security: named admin accounts (owner or support role), optional two-step sign-in with an authenticator app, lockout after repeated wrong tries, an activity log of who did what, "sign everyone out", and the option to turn off the shared ADMIN_PIN once everyone has an account. Create the first account from the admin screen while signed in with the PIN.
+- Broadcast messages: the admin sends a message to everyone, only senders or only couriers. It lands in their Alerts and as a phone notification, and can also show as a banner on Home.
+- Emergency button: during a live delivery, sender and courier can alert Bargo support with their location. The admin screen shows it at the top with call and map links and sounds a chime.
+- Verified badge for couriers whose ID and vehicle photos were checked on approval (the admin can give or remove it). Senders and recipients see it.
+- Referral codes: every user has a code and invite link; sign-ups with a code credit the inviter, and the admin sees the top referrers. Rewards are paid manually for now.
 - Negotiated price per delivery, deal sealed when both agree; daily commission per courier.
 - Alerts: an Alerts tab with unread badge, sound and vibration while the app is open, and phone push alerts when it is closed (Android Chrome, desktop, and iPhone once added to the Home Screen). Couriers are alerted about new requests for their vehicle; senders about offers, sealed deals, pickup and delivery.
 - Delivery code: the sender gets a 4-digit code to give the recipient (WhatsApp/SMS buttons); the courier must enter it to complete the delivery. Five wrong tries lock guessing for 5 minutes.

@@ -35,7 +35,7 @@ function draw(t) {
     <h2 class="title">${esc(h1)}</h2><p class="sub" style="margin:.3rem 0 .8rem">${esc(sub)}</p>
     ${t.status !== 'cancelled' ? `<div class="progress">${labels.map((l, i) => `<div class="${i <= at ? 'done' : ''}"><i></i>${l}</div>`).join('')}</div>` : ''}
     <div class="routebox"><div class="lmap" id="tmap" role="img" aria-label="Map of the delivery"></div><p><b>${t.km} km</b> by road</p>${eta}</div>
-    ${t.courier ? `<div class="panel"><p class="sub">Your courier</p><b>${esc(t.courier.firstName)}</b> <span class="muted small">${esc(VEH[t.courier.vehicle] || t.courier.vehicle)}, ${esc(t.courier.plate)}, ${Number(t.courier.rating || 0).toFixed(1)} stars</span></div>` : ''}
+    ${t.courier ? `<div class="panel"><p class="sub">Your courier</p><b>${esc(t.courier.firstName)}</b>${t.courier.verified ? ' <span class="vbadge">&#10003; Verified</span>' : ''} <span class="muted small">${esc(VEH[t.courier.vehicle] || t.courier.vehicle)}, ${esc(t.courier.plate)}, ${Number(t.courier.rating || 0).toFixed(1)} stars</span></div>` : ''}
     <div class="kv"><div><small>Item</small><span>${esc(t.itemType)}</span></div><div><small>From</small><span>${esc(t.senderFirstName)}, ${esc(t.pickup.label)}</span></div><div class="full"><small>Delivering to</small><span>${esc(t.drop.label)}${t.drop.details ? `<br><small class="detail">${esc(t.drop.details)}</small>` : ''}</span></div></div>
     ${pay}
     ${['agreed', 'picked_up'].includes(t.status) ? '<p class="notice">Only give your delivery code to the courier when you are holding the package.</p>' : ''}
